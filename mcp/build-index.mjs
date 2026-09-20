@@ -167,10 +167,10 @@ function main() {
     return;
   }
 
+  // Проект не задан — индексируем текущий каталог (запуск изнутри проекта)
   if (!args.project) {
-    console.error("Укажи проект: node mcp/build-index.mjs --project /path/to/project [--name alias]");
-    console.error("  или RAG_ROOT=/path node mcp/build-index.mjs");
-    process.exit(1);
+    args.project = process.cwd();
+    console.log(`Проект не указан — беру текущий каталог: ${args.project}`);
   }
   const srcRoot = path.resolve(args.project);
   if (!fs.existsSync(srcRoot) || !fs.statSync(srcRoot).isDirectory()) {

@@ -97,6 +97,14 @@ make set-vision MODEL=qwen3-vl-flash BASE=https://api.minimax.io/v1 KEY=...
   — провайдеры, агенты (модель или наследование), MCP;
 - `honcho/.env` — модели для honcho.
 
+По умолчанию `configure.sh` работает в режиме **слияния (merge)**: читает
+существующий `opencode.json` и добавляет только свои ключи — провайдеры
+`local`/`remote`, недостающие MCP (`rag`, `honcho`, браузеры), `model` —
+только если её ещё нет. Чужие провайдеры, MCP, агенты, плагины и выбранная
+модель **не трогаются** (не перезатирается даже `chrome-devtools` со своим
+путём к Chrome). Полная перегенерация с нуля — `--force` (затирает чужое!),
+вообще не трогать файл — `--if-missing`.
+
 ## Подстройка под модель
 
 Всё настраивается из **одного файла** `stack.config` (шаблон — `stack.config.example`; сам `stack.config` не в git — там могут быть ключи):
@@ -148,7 +156,29 @@ make infra           # ./start.sh infra — embed :8095 + qdrant :6333 (без L
 ### RAG-индексация (несколько проектов)
 
 Каждый проект индексируется отдельно, в свой каталог (имя — как у папки
-проекта, или задаётся `--name`):
+проекта, или задаётся `--name`).
+
+**Проще всего — зайти в проект и запустить `rag-index.sh`** (скрипт в корне
+репо, работает из любого каталога):
+
+```sh
+cd ~/myproject
+/path/to/opencode-env/rag-index.sh            # текущий каталог → индекс + вектора
+rag-index.sh /path/to/proj --name api         # или явный путь (опционально --name)
+```
+
+Что происходит при этом внутри:
+
+1. `build-index.mjs` — обходит исходники (исключая `node_modules`, `dist`,
+   `.git`, бинари), нарезает файлы на чанки (~150 строк с перекрытием),
+   кладёт чанки + токены для BM25 + `project.path` (абсолютный путь к
+   исходникам) в sqlite `rag/projects/<имя>/index.db`;
+2. `embed.mjs` — считает эмбеддинги bge-m3 (:8095) и заливает их в **Qdrant**
+   (:6333, коллекция `rag_<имя>`), пропуская уже залитые;
+3. готово — opencode, запущенный в этом каталоге, сам найдёт проект по
+   `project.path` (совпадение рабочей директории), ничего подключать не надо.
+
+То же самое вручную, по шагам:
 
 ```sh
 make infra                     # embed :8095 + qdrant :6333 (модель не нужна)
@@ -215,7 +245,8 @@ OpenAI-совместимой модели (honcho живёт в docker, поэ�
 
 ```
 setup.sh                 установщик (CUDA, llama.cpp, модели, Qdrant, honcho)
-configure.sh             генератор конфигов из stack.config (opencode.json, honcho/.env)
+configure.sh             генератор конфигов из stack.config (merge с существующим opencode.json)
+rag-index.sh             индексация проекта + заливка векторов в Qdrant
 start.sh                 стек-менеджер (all/infra/embed/main/qdrant/stop/health)
 Makefile                 обёртки над setup/configure/start
 stack.config.example     шаблон единой точки настройки моделей
