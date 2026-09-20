@@ -1,10 +1,16 @@
 {
   // ============================================================
-  // opencode-env — шаблон конфигурации opencode (V2)
-  // Модельно-независимый: локальная модель (llama.cpp :1234),
-  // удалённая OpenAI-совместимая, или несколько сразу.
-  // Копия в ~/.config/opencode/opencode.json (создаётся setup.sh).
-  // Выбор модели в рантайме: /models в opencode.
+  // opencode-env — справочный шаблон конфигурации opencode (V2).
+  //
+  // НЕ копируется автоматически: рабочий конфиг генерирует
+  // ./configure.sh из stack.config (реальные пути подставляются сам).
+  // Этот файл нужен только для ручной установки без configure.sh.
+  //
+  // Перед использованием замени плейсхолдер /PATH/TO/opencode-env
+  // на реальный абсолютный путь, где лежит клон репозитория.
+  // Модельно-независимый: локальная (llama.cpp :1234), удалённая
+  // OpenAI-совместимая, или несколько сразу. Выбор модели в рантайме:
+  // /models в opencode (суб-агенты по умолчанию наследуют её).
   // ============================================================
   "$schema": "https://opencode.ai/config.json",
 
@@ -30,7 +36,8 @@
     },
 
     // --- Удалённая модель (пример: любая OpenAI-совместимая) ---
-    // Раскомментируй и задай REMOTE_BASE_URL / REMOTE_API_KEY / REMOTE_MODEL.
+    // Раскомментируй и задай REMOTE_BASE_URL / REMOTE_API_KEY / REMOTE_MODEL,
+    // либо скопируй этот блок в свой конфиг с реальными значениями.
     // "remote": {
     //   "name": "Remote OpenAI-compatible",
     //   "package": "@opencode/ai/providers/openai-compatible",
@@ -47,24 +54,33 @@
     // }
   },
 
-  // --- Суб-агенты: у каждого своя модель (можно любую из провайдеров) ---
-  // Суб-агент использует заданную модель либо наследует модель сессии.
-  // На слабом ПК замени local/coder на remote/main и наоборот.
+  // --- Суб-агенты: модель НЕ задана = наследуют модель текущей сессии.
+  // Задай конкретную (например "remote/main"), чтобы закрепить за агентом
+  // свою. ВАЖНО: модель у агента можно и не трогать вообще —
+  // наследование решает задачу.
   "agents": {
-    // explore/general — встроенные, переопределяем только модель
-    "explore":  { "model": "local/coder" },
-    "general":  { "model": "local/coder" },
-    // Кастомные агенты (лежат в agents/*.md — там же модели)
-    "implementer": { "model": "local/coder" },
-    "reviewer":    { "model": "local/coder" }
+    "explore":      { "model": "local/coder" },
+    "general":      { "model": "local/coder" },
+    "implementer":  { "model": "local/coder" },
+    "reviewer":     { "model": "local/coder" }
   },
 
   "mcp": {
     "servers": {
-      // --- RAG по коду (локально: sqlite-индекс + Qdrant :6333) ---
+      // --- RAG по коду: чанки и лексика в sqlite, ВЕКТОРА в Qdrant :6333,
+      // коллекция rag_<проект>. Активный проект — по рабочей директории.
       "rag": {
         "type": "local",
         "command": ["node", "/PATH/TO/opencode-env/mcp/rag-server.mjs"],
+        "enabled": true
+      },
+
+      // --- Honcho: пер-проектная память (workspace project-<имя>).
+      // Требует запущенный honcho :8000 (make honcho).
+      "honcho": {
+        "type": "local",
+        "command": ["node", "/PATH/TO/opencode-env/mcp/honcho-server.mjs"],
+        "environment": { "HONCHO_BASE_URL": "http://127.0.0.1:8000" },
         "enabled": true
       },
 

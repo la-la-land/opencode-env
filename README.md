@@ -152,18 +152,20 @@ make infra           # ./start.sh infra — embed :8095 + qdrant :6333 (без L
 
 ```sh
 make infra                     # embed :8095 + qdrant :6333 (модель не нужна)
-# 1) построить индекс проекта:
+# 1) построить индекс проекта (чанки + лексика → sqlite):
 node mcp/build-index.mjs --project /path/to/project      # имя = имя папки
 node mcp/build-index.mjs --project /path/to/api --name api
 node mcp/build-index.mjs --list                          # что уже проиндексировано
-# 2) посчитать эмбеддинги (bge-m3 :8095): все проекты без векторов
+# 2) залить ВЕКТОРА в Qdrant (bge-m3 :8095): все проекты без эмбеддингов
 node mcp/embed.mjs
 node mcp/embed.mjs --project api                         # или только один
+node mcp/embed.mjs --project api --reset                 # пересоздать коллекцию
 ```
 
-Пути: `rag/projects/<имя>/index.db`, `rag/projects/<имя>/PROJECT_KNOWLEDGE.md`,
-`rag/projects/<имя>/project.path` (абсолютный путь к исходникам). Всё —
-в `.gitignore`.
+Хранение разделено: **sqlite** (`rag/projects/<имя>/index.db`) — чанки,
+токены для BM25, `PROJECT_KNOWLEDGE.md`, `project.path`; **Qdrant** (:6333,
+коллекция `rag_<имя>`, dim 1024, cosine) — эмбеддинги чанков. Без Qdrant
+поиск остаётся лексическим (BM25), семантика добавляется автоматически.
 
 **Как выбирается проект**: MCP-сервер `rag` смотрит на рабочий каталог
 opencode — берётся индекс проекта с самым длинным префиксом пути (глубина

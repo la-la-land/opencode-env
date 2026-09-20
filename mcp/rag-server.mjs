@@ -3,6 +3,8 @@
  * rag-server.mjs — MCP-сервер RAG по коду (мульти-проектный).
  *
  * Индексы хранятся по проектам: rag/projects/<name>/ (см. build-index.mjs).
+ * Чанки и лексика (BM25) — в sqlite index.db; ВЕКТОРА — в Qdrant :6333,
+ * коллекция rag_<name> (dim 1024, cosine), заливаются mcp/embed.mjs.
  * Активный проект определяется по рабочей директории (cwd) процесса opencode:
  * выбирается проект, чей путь — самый длинный префикс текущего каталога.
  * Можно явно указать проект в любом инструменте (параметр project).
@@ -25,6 +27,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, ".."); // корень репо opencode-env
 const PROJECTS_DIR = process.env.RAG_PROJECTS_DIR ?? path.join(ROOT, "rag", "projects");
 const EMBED_URL = process.env.RAG_EMBED_URL ?? "http://127.0.0.1:8095/v1/embeddings";
+const QDRANT_URL = (process.env.QDRANT_URL ?? "http://127.0.0.1:6333").replace(/\/+$/, "");
+
+function collectionName(name) { return "rag_" + name; }
 
 // ---------- список проектов ----------
 function scanProjects() {
@@ -82,16 +87,11 @@ function load(name) {
       id: r.id, path: r.path, lang: r.lang,
       start_line: r.start_line, end_line: r.end_line, text: r.text,
       tokens: (r.tokens || "").split(" ").filter(Boolean),
-      vec: null,
     })),
     df: new Map(),
   };
   idx.N = idx.chunks.length;
-  try {
-    const vrows = db.prepare("SELECT id,vec FROM vecs").all();
-    const vmap = new Map(vrows.map((v) => [v.id, new Float32Array(v.vec.buffer.slice(v.vec.byteOffset, v.vec.byteOffset + v.vec.byteLength))]));
-    for (const c of idx.chunks) c.vec = vmap.get(c.id) || null;
-  } catch { /* vecs ещё нет — лексика */ }
+  idx.byId = new Map(idx.chunks.map((c, i) => [c.id, i]));
   for (const c of idx.chunks) {
     const seen = new Set(c.tokens);
     for (const t of seen) idx.df.set(t, (idx.df.get(t) || 0) + 1);
@@ -185,10 +185,27 @@ async function embedQuery(query) {
   } catch { return null; }
 }
 
-function cosine(a, b) {
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
-  return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9);
+async function qdrantGet(collection) {
+  try {
+    const res = await fetch(`${QDRANT_URL}/collections/${collection}`, { method: "GET", signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return j?.result ?? null;
+  } catch { return null; }
+}
+
+async function qdrantSearch(collection, vector, limit) {
+  try {
+    const res = await fetch(`${QDRANT_URL}/collections/${collection}/points/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(8000),
+      body: JSON.stringify({ vector: Array.from(vector), limit, with_payload: false }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return j?.result ?? null;
+  } catch { return null; }
 }
 
 function snippet(idx, chunk, queryTokens) {
@@ -212,15 +229,17 @@ async function search(idx, query, n = 5, withSemantic = true) {
   if (withSemantic) {
     const qv = await embedQuery(query);
     if (qv) {
-      const seed = new Set(top.slice(0, n).map((r) => r.idx));
-      for (let i = 0; i < N; i++) {
-        const c = chunks[i];
-        if (c.vec && !seed.has(i)) {
-          const sim = cosine(qv, c.vec);
+      const hits = await qdrantSearch(collectionName(idx.name), qv, Math.max(10, n * 4));
+      if (hits) {
+        const seed = new Set(top.slice(0, n).map((r) => r.idx));
+        for (const h of hits) {
+          const i = idx.byId.get(h.id);
+          if (i === undefined || seed.has(i)) continue;
+          const sim = h.score ?? 0;
           if (sim > 0.5) top.push({ idx: i, score: sim * 3, exact: 0, semantic: sim });
         }
+        top.sort((a, b) => b.score - a.score);
       }
-      top.sort((a, b) => b.score - a.score);
     }
   }
   const qTokens = uniqTokens(query);
@@ -252,11 +271,15 @@ function summary(idx, targetPath) {
   return `Файл: ${hits[0].path}\nСтрок в индексе: ${total} (${hits.length} чанков)\nНачало файла:\n\`\`\`${hits[0].lang}\n${head}\n\`\`\``;
 }
 
-function stats(idx) {
+async function stats(idx) {
   const langs = {};
   for (const c of idx.chunks) langs[c.lang] = (langs[c.lang] || 0) + 1;
-  const hasVec = idx.chunks.filter((c) => c.vec).length;
-  return `Проект: ${idx.name} (${idx.src})\nИндекс: ${idx.N} чанков (${Object.keys(langs).length} языков)\nЯзыки: ${Object.entries(langs).map(([k, v]) => `${k}=${v}`).join(", ")}\nЭмбеддинги: ${hasVec}/${idx.N} чанков\nБаза знаний: ${fs.existsSync(idx.kbPath) ? idx.kbPath : "нет"}`;
+  const info = await qdrantGet(collectionName(idx.name));
+  const vecs = info?.points_count ?? info?.vectors_count ?? null;
+  const vecLine = vecs === null
+    ? "Эмбеддинги: 0 (коллекция не создана — запусти node mcp/embed.mjs; нужны bge-m3 :8095 и Qdrant :6333)"
+    : `Эмбеддинги: ${vecs}/${idx.N} чанков (Qdrant: rag_${idx.name})`;
+  return `Проект: ${idx.name} (${idx.src})\nИндекс: ${idx.N} чанков (${Object.keys(langs).length} языков)\nЯзыки: ${Object.entries(langs).map(([k, v]) => `${k}=${v}`).join(", ")}\n${vecLine}\nБаза знаний: ${fs.existsSync(idx.kbPath) ? idx.kbPath : "нет"}`;
 }
 
 function projectInfo() {
@@ -397,7 +420,7 @@ async function handleRequest(msg) {
           text = summary(idx, String(a.path || ""));
         } else if (name === "rag_stats") {
           const idx = load(chooseProject(a.project));
-          text = stats(idx);
+          text = await stats(idx);
         } else if (name === "kb_read") {
           const idx = load(chooseProject(a.project));
           text = kbRead(idx);

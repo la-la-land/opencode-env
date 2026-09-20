@@ -46,7 +46,7 @@ start_embed() {
 }
 
 start_qdrant() {
-  if curl -s --max-time 2 http://127.0.0.1:6333/health >/dev/null 2>&1; then
+  if curl -s --max-time 2 http://127.0.0.1:6333/healthz >/dev/null 2>&1; then
     echo "qdrant уже работает (:6333)"; return
   fi
   [ -x ./qdrant/qdrant ] || { echo "нет qdrant — запусти ./setup.sh"; exit 1; }
@@ -54,7 +54,7 @@ start_qdrant() {
   setsid ./qdrant/qdrant --config-path ./qdrant/config.yaml > qdrant/qdrant.log 2>&1 < /dev/null &
   disown
   for i in $(seq 1 15); do
-    curl -s --max-time 2 http://127.0.0.1:6333/health >/dev/null 2>&1 && { echo "qdrant UP"; return; }
+    curl -s --max-time 2 http://127.0.0.1:6333/healthz >/dev/null 2>&1 && { echo "qdrant UP"; return; }
     sleep 1
   done
   echo "qdrant не поднялся — см. qdrant/qdrant.log"
@@ -91,7 +91,8 @@ health() {
   echo "--- статус ---"
   for s in "1234 LLM" "8095 embed" "6333 qdrant" "8000 honcho"; do
     set -- $s
-    if curl -sf --max-time 2 "http://127.0.0.1:$1/health" >/dev/null 2>&1; then
+    local ep="health"; [ "$1" = "6333" ] && ep="healthz"
+    if curl -sf --max-time 2 "http://127.0.0.1:$1/$ep" >/dev/null 2>&1; then
       echo "  [ok]   :$1 ($2)"
     elif [ "$1" = "1234" ] && [ ! -f "$MAIN_MODEL" ]; then
       echo "  [ok]   :1234 (LLM — удалённая, локальной модели нет)"
