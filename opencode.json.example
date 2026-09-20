@@ -1,0 +1,119 @@
+{
+  // ============================================================
+  // opencode-env — шаблон конфигурации opencode (V2)
+  // Модельно-независимый: локальная модель (llama.cpp :1234),
+  // удалённая OpenAI-совместимая, или несколько сразу.
+  // Копия в ~/.config/opencode/opencode.json (создаётся setup.sh).
+  // Выбор модели в рантайме: /models в opencode.
+  // ============================================================
+  "$schema": "https://opencode.ai/config.json",
+
+  "model": "local/coder",
+
+  "providers": {
+    // --- Локальный инференс (llama.cpp): start.sh main на этом ПК ---
+    "local": {
+      "name": "Local llama.cpp (:1234)",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:1234/v1",
+        "apiKey": "local"
+      },
+      "models": {
+        "coder": {
+          "modelID": "local-coder",
+          "name": "Gemma 4 12B it (256K)",
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+          "limit": { "context": 262144, "output": 65536 }
+        }
+      }
+    },
+
+    // --- Удалённая модель (пример: любая OpenAI-совместимая) ---
+    // Раскомментируй и задай REMOTE_BASE_URL / REMOTE_API_KEY / REMOTE_MODEL.
+    // "remote": {
+    //   "name": "Remote OpenAI-compatible",
+    //   "package": "@opencode/ai/providers/openai-compatible",
+    //   "settings": {
+    //     "baseURL": "{env:REMOTE_BASE_URL}",
+    //     "apiKey": "{env:REMOTE_API_KEY}"
+    //   },
+    //   "models": {
+    //     "main": {
+    //       "modelID": "{env:REMOTE_MODEL}",
+    //       "limit": { "context": 200000, "output": 32768 }
+    //     }
+    //   }
+    // }
+  },
+
+  // --- Суб-агенты: у каждого своя модель (можно любую из провайдеров) ---
+  // Суб-агент использует заданную модель либо наследует модель сессии.
+  // На слабом ПК замени local/coder на remote/main и наоборот.
+  "agents": {
+    // explore/general — встроенные, переопределяем только модель
+    "explore":  { "model": "local/coder" },
+    "general":  { "model": "local/coder" },
+    // Кастомные агенты (лежат в agents/*.md — там же модели)
+    "implementer": { "model": "local/coder" },
+    "reviewer":    { "model": "local/coder" }
+  },
+
+  "mcp": {
+    "servers": {
+      // --- RAG по коду (локально: sqlite-индекс + Qdrant :6333) ---
+      "rag": {
+        "type": "local",
+        "command": ["node", "/PATH/TO/opencode-env/mcp/rag-server.mjs"],
+        "enabled": true
+      },
+
+      // --- Vision: локальная мультимодальная модель или удалённая.
+      // Если используешь удалённую (например MiniMax/OpenAI), задай env.
+      "vision": {
+        "type": "local",
+        "command": ["node", "/PATH/TO/opencode-env/mcp/vision-server.mjs"],
+        "environment": {
+          "OPENAI_BASE_URL": "{env:VISION_BASE_URL}",
+          "OPENAI_API_KEY": "{env:VISION_API_KEY}",
+          "VISION_MODEL": "{env:VISION_MODEL}"
+        },
+        "enabled": false
+      },
+
+      // --- Браузерная автоматизация ---
+      "chrome-devtools": {
+        "type": "local",
+        "command": [
+          "npx", "-y", "chrome-devtools-mcp@latest",
+          "--headless",
+          "--no-sandbox",
+          "--chromeArg=--no-sandbox",
+          "--chromeArg=--disable-setuid-sandbox",
+          "--chromeArg=--disable-dev-shm-usage",
+          "--chromeArg=--disable-gpu",
+          "--no-usage-statistics",
+          "--no-performance-crux",
+          "--isolated",
+          "--executable-path", "{env:CHROME_PATH}"
+        ],
+        "enabled": true
+      },
+      "playwright": {
+        "type": "local",
+        "command": [
+          "npx", "-y", "@playwright/mcp@latest",
+          "--headless",
+          "--no-sandbox",
+          "--browser", "chromium",
+          "--isolated"
+        ],
+        "enabled": true
+      }
+    }
+  },
+
+  "experimental": {
+    "mcp_timeout": 300000
+  }
+}

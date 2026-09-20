@@ -1,0 +1,10 @@
+# Auto-merge с официальным docker-compose.yml honcho.
+# Даёт контейнерам доступ к хосту (llama.cpp :1234) через host.docker.internal.
+services:
+  api:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  deriver:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 2g

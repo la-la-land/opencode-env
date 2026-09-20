@@ -1,0 +1,17 @@
+# Тяжёлое и локальное — НЕ попадает в git
+models/
+llama.cpp/
+llama.cpp-bin/
+*.log
+*.db
+rag/*.db
+qdrant/qdrant
+qdrant/storage/
+qdrant/*.log
+.env
+honcho/.env
+honcho-src/
+.honcho/
+stack.config
+rag/PROJECT_KNOWLEDGE.md
+.DS_Store

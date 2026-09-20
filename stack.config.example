@@ -1,0 +1,43 @@
+# ============================================================
+# opencode-env / stack.config — ЕДИНАЯ точка настройки моделей.
+# Меняй значения и запусти: ./configure.sh (или make config).
+# Всё остальное (opencode.json, honcho/.env, env vision-MCP)
+# перегенерируется автоматически.
+# ============================================================
+
+# --- основная модель opencode ---
+#   local/coder  — локальная Gemma (llama.cpp :1234)
+#   remote/main  — удалённая (нужны REMOTE_* ниже)
+OPENCODE_MODEL=local/coder
+
+# --- локальная LLM (llama.cpp) ---
+LOCAL_LLM_BASE_URL=http://127.0.0.1:1234/v1
+LOCAL_LLM_MODEL=local-coder
+
+# --- удалённая модель (пример: любая OpenAI-совместимая) ---
+# Пустые значения = провайдер не подключается.
+REMOTE_BASE_URL=
+REMOTE_API_KEY=
+REMOTE_MODEL=
+
+# --- vision (мультимодальная модель для скриншотов) ---
+# Пусто = vision-mcp выключен. Включить: ./configure.sh set-vision <model> <base_url> [api_key]
+VISION_MODEL=
+VISION_BASE_URL=
+VISION_API_KEY=
+
+# --- honcho: модель для deriver/dialectic/summary/dream ---
+# Внутри docker-контейнеров хост = host.docker.internal.
+# Пусто = берётся из LOCAL_LLM_* (но адрес внутри контейнеров нужен host.docker.internal).
+HONCHO_LLM_BASE_URL=http://host.docker.internal:1234/v1
+HONCHO_LLM_MODEL=local-coder
+
+# --- браузер (chrome-devtools) ---
+CHROME_PATH=/usr/bin/google-chrome
+
+# --- модели суб-агентов ---
+# Пусто = наследовать модель сессии (подстраивается автоматически).
+AGENT_MODEL_GENERAL=
+AGENT_MODEL_EXPLORE=
+AGENT_MODEL_IMPLEMENTER=local/coder
+AGENT_MODEL_REVIEWER=local/coder

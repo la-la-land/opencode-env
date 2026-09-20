@@ -1,0 +1,10 @@
+# Qdrant — векторная БД для RAG (локально, без Docker)
+# Коллекции: одна на проект (имя = имя проекта). dim = 1024 (bge-m3).
+storage:
+  storage_path: ./qdrant/storage
+service:
+  host: 127.0.0.1
+  http_port: 6333
+  grpc_port: 6334
+telemetry_disabled: true
+log_level: INFO
