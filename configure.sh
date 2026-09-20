@@ -193,7 +193,9 @@ PY
 # ---------- генерация honcho/.env (модели) ----------
 if [ -f honcho/.env.template ]; then
   mkdir -p honcho
-  HONCHO_B="${HONCHO_LLM_BASE_URL:-${LOCAL_LLM_BASE_URL}}"
+  # honcho всегда в docker — хост (llama.cpp :1234) из контейнера доступен
+  # только через host.docker.internal (настраивается в docker-compose.override.yml).
+  HONCHO_B="${HONCHO_LLM_BASE_URL:-http://host.docker.internal:1234/v1}"
   HONCHO_M="${HONCHO_LLM_MODEL:-${LOCAL_LLM_MODEL}}"
   sed -e "s|^HONCHO_LLM_BASE_URL=.*|HONCHO_LLM_BASE_URL=${HONCHO_B}|" \
       -e "s|^HONCHO_LLM_MODEL=.*|HONCHO_LLM_MODEL=${HONCHO_M}|" \
