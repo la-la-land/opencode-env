@@ -215,10 +215,9 @@ OpenAI-совместимой модели (honcho живёт в docker, поэ�
 
 ```
 setup.sh                 установщик (CUDA, llama.cpp, модели, Qdrant, honcho)
-configure.sh             генератор конфигов из stack.config
-start.sh                 стек-менеджер (all/embed/main/qdrant/stop/health)
+configure.sh             генератор конфигов из stack.config (opencode.json, honcho/.env)
+start.sh                 стек-менеджер (all/infra/embed/main/qdrant/stop/health)
 Makefile                 обёртки над setup/configure/start
-opencode.json.example    шаблон конфига opencode (референс)
 stack.config.example     шаблон единой точки настройки моделей
 agents/                  кастомные агенты (implementer, reviewer)
 mcp/                     MCP-серверы: rag-server (поиск), honcho-server (память),
