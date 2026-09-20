@@ -1,27 +1,30 @@
 #!/usr/bin/env bash
 # ============================================================
-# opencode-env / configure.sh — генератор конфигов под выбранную модель.
+# opencode-env / configure.sh — генератор конфигов.
 #
 # Читает stack.config (если есть) + окружение, пишет:
-#   ~/.config/opencode/opencode.json  — opencode (провайдеры/модели/агенты/MCP)
+#   ~/.config/opencode/opencode.json  — opencode (провайдер local, MCP)
 #   honcho/.env                       — модели honcho (deriver/dialectic/summary)
+#
+# Модель в конфиг НЕ пишется: она выбирается в opencode прямо в сессии
+# (/models) и наследуется суб-агентами. Удалённые провайдеры добавляются
+# тоже нативно (opencode /providers, auth login, provider add) — здесь
+# они не создаются. Этот скрипт ставит только нашу инфраструктуру:
+# провайдер local (llama.cpp) и MCP-серверы (rag, honcho, браузеры, vision).
 #
 # СЛИЯНИЕ (по умолчанию): существующий opencode.json НЕ перезаписывается —
 # читается, и в него добавляются/обновляются только ключи этого репо
-# (провайдеры local/remote, агенты AGENT_MODEL_*, MCP rag/honcho/браузеры).
-# Чужие провайдеры, MCP (qwen-image, wordstat...), плагины, модель и т.п.
-# остаются нетронутыми. Сделай бэкап перед полной перегенерацией:
-#   --force   — полная перегенерация с нуля (старое поведение)
-#   --if-missing — вообще не трогать существующий конфиг
+# (провайдер local, MCP rag/honcho/браузеры). Чужие провайдеры, MCP
+# (qwen-image, wordstat...), плагины, модель и т.п. остаются нетронутыми.
+#   --force         — полная перегенерация с нуля (старое поведение)
+#   --if-missing    — вообще не трогать существующий конфиг
 #
 # Usage:
 #   ./configure.sh                          слить изменения в существующий конфиг
 #   ./configure.sh --dir /path/to/project   сгенерировать opencode.json в проект
 #   ./configure.sh --if-missing            не перезаписывать существующий конфиг
 #   ./configure.sh --force                  перегенерировать с нуля (затирает чужое!)
-#   ./configure.sh set-model local|remote MODEL   переключить основную модель
-#   ./configure.sh set-vision MODEL BASE_URL [API_KEY]   включить vision
-#   ./configure.sh set-agent-model AGENT MODEL   модель конкретного суб-агента
+#   ./configure.sh set-vision MODEL BASE_URL [API_KEY]   включить vision-MCP
 #   ./configure.sh --print                  показать итоговый конфиг
 # ============================================================
 set -euo pipefail
@@ -46,13 +49,9 @@ set -- "${EXTRA[@]}"
 CONF="$ROOT/stack.config"
 [ -f "$CONF" ] && . "$CONF" || true
 
-# --- значения по умолчанию ---
+# --- значения по умолчанию (всё опционально) ---
 LOCAL_LLM_BASE_URL="${LOCAL_LLM_BASE_URL:-http://127.0.0.1:1234/v1}"
 LOCAL_LLM_MODEL="${LOCAL_LLM_MODEL:-local-coder}"
-REMOTE_BASE_URL="${REMOTE_BASE_URL:-}"
-REMOTE_API_KEY="${REMOTE_API_KEY:-}"
-REMOTE_MODEL="${REMOTE_MODEL:-}"
-OPENCODE_MODEL="${OPENCODE_MODEL:-local/coder}"
 VISION_MODEL="${VISION_MODEL:-}"
 VISION_BASE_URL="${VISION_BASE_URL:-}"
 VISION_API_KEY="${VISION_API_KEY:-}"
@@ -60,38 +59,16 @@ CHROME_PATH="${CHROME_PATH:-/usr/bin/google-chrome}"
 HONCHO_BASE_URL="${HONCHO_BASE_URL:-http://127.0.0.1:8000}"
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 
-# Модели суб-агентов (пусто = наследовать модель сессии — главный режим)
-AGENT_MODEL_GENERAL="${AGENT_MODEL_GENERAL:-}"
-AGENT_MODEL_EXPLORE="${AGENT_MODEL_EXPLORE:-}"
-AGENT_MODEL_IMPLEMENTER="${AGENT_MODEL_IMPLEMENTER:-}"
-AGENT_MODEL_REVIEWER="${AGENT_MODEL_REVIEWER:-}"
-
 # ---------- команды ----------
 case "${1:-gen}" in
-  set-model)
-    [ $# -ge 3 ] || { echo "usage: configure.sh set-model local|remote MODEL"; exit 1; }
-    BACKEND="$2"; M="$3"
-    if [ "$BACKEND" = "local" ]; then
-      sed -i "s|^OPENCODE_MODEL=.*|OPENCODE_MODEL=local/coder|" "$CONF" 2>/dev/null || echo "OPENCODE_MODEL=local/coder" >> "$CONF"
-    else
-      sed -i "s|^OPENCODE_MODEL=.*|OPENCODE_MODEL=remote/main|" "$CONF" 2>/dev/null || echo "OPENCODE_MODEL=remote/main" >> "$CONF"
-      echo "  (убедись, что в stack.config заданы REMOTE_BASE_URL/REMOTE_API_KEY/REMOTE_MODEL)"
-    fi
-    echo "основная модель -> $BACKEND ($M)"; exec "$0" ;;
   set-vision)
     [ $# -ge 3 ] || { echo "usage: configure.sh set-vision MODEL BASE_URL [API_KEY]"; exit 1; }
     V="$2"; B="$3"; K="${4:-}"
     sed -i "/^VISION_/d" "$CONF" 2>/dev/null || true
     printf 'VISION_MODEL=%s\nVISION_BASE_URL=%s\nVISION_API_KEY=%s\n' "$V" "$B" "$K" >> "$CONF"
     echo "vision включён: $V"; exec "$0" ;;
-  set-agent-model)
-    [ $# -ge 3 ] || { echo "usage: configure.sh set-agent-model AGENT MODEL"; exit 1; }
-    A="$(echo "$2" | tr '[:lower:]' '[:upper:]')"; M="$3"
-    sed -i "/^AGENT_MODEL_${A}=/d" "$CONF" 2>/dev/null || true
-    echo "AGENT_MODEL_${A}=$M" >> "$CONF"
-    echo "агент $2 -> $M"; exec "$0" ;;
   gen|--print) : ;;
-  *) echo "usage: $0 [set-model|set-vision|set-agent-model|gen|--print]"; exit 1 ;;
+  *) echo "usage: $0 [set-vision|gen|--print]"; exit 1 ;;
 esac
 
 # ---------- выбор цели ----------
@@ -104,10 +81,8 @@ fi
 mkdir -p "$(dirname "$OUT")"
 [ -f "$OUT" ] && [ "${1:-}" != "--print" ] && cp "$OUT" "$OUT.bak.$(date +%s)" 2>/dev/null || true
 
-export ROOT LOCAL_LLM_BASE_URL LOCAL_LLM_MODEL REMOTE_BASE_URL REMOTE_API_KEY REMOTE_MODEL \
-       OPENCODE_MODEL VISION_MODEL VISION_BASE_URL VISION_API_KEY CHROME_PATH HONCHO_BASE_URL \
-       AGENT_MODEL_GENERAL AGENT_MODEL_EXPLORE AGENT_MODEL_IMPLEMENTER AGENT_MODEL_REVIEWER \
-       MERGE_FORCE="$FORCE" MERGE_IF_MISSING="$IF_MISSING" OUT
+export ROOT LOCAL_LLM_BASE_URL LOCAL_LLM_MODEL VISION_MODEL VISION_BASE_URL VISION_API_KEY \
+       CHROME_PATH HONCHO_BASE_URL MERGE_FORCE="$FORCE" OUT
 
 python3 - "$OUT" <<'PY'
 import json, os, sys
@@ -118,19 +93,11 @@ force  = os.environ.get("MERGE_FORCE","0") == "1"
 root  = os.environ["ROOT"]
 local_b= os.environ["LOCAL_LLM_BASE_URL"]
 local_m= os.environ["LOCAL_LLM_MODEL"]
-remote_b=os.environ.get("REMOTE_BASE_URL","")
-remote_k=os.environ.get("REMOTE_API_KEY","")
-remote_m=os.environ.get("REMOTE_MODEL","")
-open_model=os.environ.get("OPENCODE_MODEL","local/coder")
 vis_m = os.environ.get("VISION_MODEL","")
 vis_b = os.environ.get("VISION_BASE_URL","")
 vis_k = os.environ.get("VISION_API_KEY","")
 chrome= os.environ.get("CHROME_PATH","/usr/bin/google-chrome")
 honcho_b=os.environ.get("HONCHO_BASE_URL","http://127.0.0.1:8000")
-
-def am(name):
-    v = os.environ.get(f"AGENT_MODEL_{name.upper()}","")
-    return v or None
 
 # ---------- читаем существующий конфиг (merge), если есть и не --force ----------
 cfg = {}
@@ -143,13 +110,13 @@ if target != "/dev/stdout" and not force and os.path.exists(target):
         print(f"[warn] не могу распарсить {target} ({e}) — перегенерирую с нуля")
 
 cfg.setdefault("$schema", "https://opencode.ai/config.json")
-
 was_existing = bool(cfg)
-# root-модель: не перезаписываем чужой выбор, ставим только если её ещё нет
-if open_model and not cfg.get("model") and target != "/dev/stdout":
-    cfg["model"] = open_model
 
-# ---------- провайдеры (добавляем/обновляем ТОЛЬКО свои id) ----------
+# Модель в конфиг не пишем: основная — та, что выбрана в сессии (/models).
+# Существующий "model" (личный выбор юзера) не трогаем.
+
+# ---------- провайдеры: только local (llama.cpp — наша инфраструктура) ----------
+# Удалённые провайдеры добавляются нативно: opencode /providers, auth login, provider add.
 providers = cfg.setdefault("providers", {})
 providers["local"] = {
     "name": "Local llama.cpp (:1234)",
@@ -164,20 +131,6 @@ providers["local"] = {
         }
     },
 }
-if remote_b:
-    providers["remote"] = {
-        "name": "Remote OpenAI-compatible",
-        "package": "@opencode/ai/providers/openai-compatible",
-        "settings": {"baseURL": remote_b, "apiKey": remote_k or "x"},
-        "models": {"main": {"modelID": remote_m or "main", "limit": {"context": 200000, "output": 32768}}},
-    }
-
-# ---------- агенты (только заданные AGENT_MODEL_*; остальное не трогаем) ----------
-agent_models = {n: am(n) for n in ("general","explore","implementer","reviewer") if am(n)}
-if agent_models:
-    agents = cfg.setdefault("agents", {})
-    for n, m in agent_models.items():
-        agents.setdefault(n, {})["model"] = m
 
 # ---------- MCP (добавляем/обновляем ТОЛЬКО свои серверы) ----------
 servers_ours = {
@@ -245,13 +198,12 @@ if [ -f honcho/.env.template ]; then
 fi
 
 echo "--- итог ---"
-echo "  основная модель: $OPENCODE_MODEL"
 echo "  локальная LLM:   $LOCAL_LLM_BASE_URL ($LOCAL_LLM_MODEL)"
-[ -n "$REMOTE_BASE_URL" ] && echo "  удалённая LLM:   $REMOTE_BASE_URL ($REMOTE_MODEL)" || echo "  удалённая LLM:   не настроена (добавь REMOTE_* в stack.config)"
-[ -n "$VISION_MODEL" ] && echo "  vision:          $VISION_MODEL (@ $VISION_BASE_URL)" || echo "  vision:          выключен (configure.sh set-vision ...)"
+[ -n "$VISION_MODEL" ] && echo "  vision (MCP):    $VISION_MODEL (@ $VISION_BASE_URL)" || echo "  vision (MCP):    выключен (configure.sh set-vision ...)"
+echo "  модель opencode: не задаётся — выбирай в сессии (/models), суб-агенты наследуют её"
 echo
 CFG_PATH="${TARGET_DIR:+$TARGET_DIR/opencode.json}"
 [ -z "$TARGET_DIR" ] && CFG_PATH="$CONFIG_DIR/opencode.json"
-echo "Проверь: opencode → /models (выбор модели в сессии: локальная или удалённая), mcp список."
+echo "Проверь: opencode → /models (модель сессии), /providers (удалённые — нативно), mcp список."
 echo "Конфиг: $( [ "${1:-}" = "--print" ] && echo stdout || echo "$CFG_PATH" )"
 [ -n "$CFG_PATH" ] && [ "${1:-}" != "--print" ] && [ ! -f "$CFG_PATH" ] && echo "  (opencode.json записан в $CFG_PATH — opencode подхватит его автоматически)"

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# ============================================================
+# rag — глобальная команда RAG (симлинк: make install-bin → ~/.local/bin/rag).
+# Работает из ЛЮБОГО каталога: проект определяется по текущей директории.
+#
+#   rag index [путь] [--name alias]     проиндексировать проект + вектора в Qdrant
+#                                       (путь по умолчанию — текущий каталог)
+#   rag search "запрос" [--top N] [--project ИМЯ]   поиск → md-таблица
+#   rag where СИМВОЛ                     где определён символ
+#   rag summary ПУТЬ                     сводка по файлу
+#   rag stats [ИМЯ]                      статистика индекса
+#   rag list                             проекты + активный
+#   rag kb read | rag kb add "факт"      база знаний
+#
+# Установка: make install-bin  (симлинк в ~/.local/bin/rag)
+# ============================================================
+set -euo pipefail
+CALLER_PWD="$(pwd)"                       # каталог, из которого вызвали rag
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+cd "$(dirname "$SELF")/.."                # корень репо (bin/rag → ..)
+
+CMD="${1:-help}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+  index)
+    if [ "${1:-}" = "--name" ]; then
+      PROJECT="$CALLER_PWD"
+    else
+      PROJECT="${1:-$CALLER_PWD}"
+    fi
+    echo "=== 1) индексирую: $PROJECT"
+    node mcp/build-index.mjs --project "$PROJECT" "$@"
+    echo "=== 2) заливаю вектора в Qdrant"
+    node mcp/embed.mjs
+    echo "=== готово. Проекты:"
+    node mcp/build-index.mjs --list
+    ;;
+  search|where|summary|stats|list|project|kb|help)
+    RAG_CWD="$CALLER_PWD" node mcp/rag-cli.mjs "$CMD" "$@"
+    ;;
+  *)
+    echo "usage: rag [index|search|where|summary|stats|list|kb|help]"
+    echo "  Пример: cd ~/myproject && rag index && rag search 'как делается рассылка'"
+    exit 2
+    ;;
+esac

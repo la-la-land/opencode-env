@@ -3,22 +3,22 @@
 # Главный принцип: локальная LLM (Gemma) НЕ ставится по умолчанию.
 #   make setup           — инфраструктура (embed bge-m3, Qdrant, honcho опционально)
 #   make model-gemma     — ОТДЕЛЬНО, если нужна локальная LLM (GPU)
-# Модель для работы берётся из выбранной в opencode-сессии (/models);
-# суб-агенты наследуют её (или заданы AGENT_MODEL_* в stack.config).
-#   BACKEND=local|remote   — remote: сценарий без локальной LLM
+# Модель не задаётся в конфиге: opencode сам даёт список в /models —
+# выбираешь в сессии, суб-агенты наследуют её. Удалённые провайдеры —
+# нативно (opencode /providers, auth login, provider add).
 #   WITH_HONCHO=0|1        — разворачивать ли honcho (docker)
 
 MODEL     ?= none
-BACKEND   ?= local
 WITH_HONCHO ?= 0
+BIN_DIR   ?= $(HOME)/.local/bin
 
-.PHONY: setup models model-gemma config set-model set-vision set-agent-model start infra stop health honcho clean help
+.PHONY: setup models model-gemma config set-vision install-bin start infra stop health honcho clean help
 
 help: ## Показать справку
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
 
 setup: ## Полная установка инфраструктуры (локальная LLM — отдельно: make model-gemma)
-	./setup.sh --model $(MODEL) --backend $(BACKEND) --honcho $(WITH_HONCHO)
+	./setup.sh --model $(MODEL) --honcho $(WITH_HONCHO)
 	./configure.sh --if-missing
 
 models: ## Скачать модели: bge-m3 (RAG) всегда; Gemma — только с MODEL=gemma
@@ -30,14 +30,15 @@ model-gemma: ## Установить локальную Gemma 4 12B (отдел�
 config: ## Перегенерировать конфиги из stack.config (opencode.json, honcho/.env)
 	./configure.sh
 
-set-model: ## Основная модель: make set-model BACKEND=local|remote MODEL=...
-	./configure.sh set-model $(BACKEND) $(MODEL)
-
-set-vision: ## Vision: make set-vision MODEL=... BASE=... KEY=...
+set-vision: ## Vision-MCP: make set-vision MODEL=... BASE=... KEY=...
 	./configure.sh set-vision $(MODEL) $(BASE) $(KEY)
 
-set-agent-model: ## Модель суб-агента: make set-agent-model AGENT=explore MODEL=remote/main
-	./configure.sh set-agent-model $(AGENT) $(MODEL)
+install-bin: ## Глобальная команда rag → $(BIN_DIR)/rag (проект — по текущему каталогу)
+	@mkdir -p $(BIN_DIR)
+	ln -sf $(CURDIR)/bin/rag $(BIN_DIR)/rag
+	@echo "rag установлен: $(BIN_DIR)/rag"
+	@echo "  rag index               — индекс текущего каталога + вектора в Qdrant"
+	@echo "  rag search \"запрос\"     — поиск → md-таблица"
 
 start: ## Поднять стек (embed :8095, main :1234, qdrant :6333)
 	./start.sh all

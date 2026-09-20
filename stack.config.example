@@ -1,54 +1,30 @@
 # ============================================================
-# opencode-env / stack.config — ЕДИНАЯ точка настройки моделей.
+# opencode-env / stack.config — настройки MCP-стеков.
 # Меняй значения и запусти: ./configure.sh (или make config).
-# Всё остальное (opencode.json, honcho/.env, env vision-MCP)
-# перегенерируется автоматически.
+# Всё остальное (opencode.json, honcho/.env) перегенерируется автоматически.
 #
-# Два сценария:
-#   1) ЛОКАЛЬНАЯ LLM (ПК с GPU): OPENCODE_MODEL=local/coder,
-#      BACKEND=local при установке (make setup).
-#   2) БЕЗ ЛОКАЛЬНОЙ LLM (ноутбук, сервер без GPU, экономия):
-#      BACKEND=remote при установке (make setup BACKEND=remote),
-#      локальная Gemma не ставится; RAG/браузер/honcho работают,
-#      модель для агентов берётся из REMOTE_* ниже или выбирается
-#      в opencode прямо в сессии (/models). Запуск: make infra.
+# Чего здесь НЕТ (и не будет):
+#   - модели по умолчанию — opencode сам даёт список моделей в /models,
+#     выбираешь прямо в сессии, суб-агенты наследуют её;
+#   - удалённые провайдеры — добавляются нативно: opencode /providers,
+#     auth login, provider add;
+#   - модели суб-агентов — наследуют модель сессии.
 # ============================================================
 
-# --- основная модель opencode (выбор по умолчанию при старте сессии) ---
-#   local/coder  — локальная Gemma (llama.cpp :1234)
-#   remote/main  — удалённая (нужны REMOTE_* ниже)
-OPENCODE_MODEL=local/coder
-
-# --- локальная LLM (llama.cpp) ---
+# --- локальная LLM (llama.cpp :1234) — только если поставил: make model-gemma ---
 LOCAL_LLM_BASE_URL=http://127.0.0.1:1234/v1
 LOCAL_LLM_MODEL=local-coder
 
-# --- удалённая модель (пример: любая OpenAI-совместимая) ---
-# Пустые значения = провайдер не подключается.
-REMOTE_BASE_URL=
-REMOTE_API_KEY=
-REMOTE_MODEL=
-
-# --- vision (мультимодальная модель для скриншотов) ---
-# Пусто = vision-mcp выключен. Включить: ./configure.sh set-vision <model> <base_url> [api_key]
+# --- vision-MCP (скриншоты, описание картинок) ---
+# Пусто = vision выключен. Включить: ./configure.sh set-vision <model> <base_url> [api_key]
 VISION_MODEL=
 VISION_BASE_URL=
 VISION_API_KEY=
 
-# --- honcho: модель для deriver/dialectic/summary/dream ---
-# Внутри docker-контейнеров хост = host.docker.internal.
-# Пусто = берётся из LOCAL_LLM_* (но адрес внутри контейнеров нужен host.docker.internal).
+# --- honcho (память агента): LLM для deriver/dialectic/summary ---
+# Пусто = берётся из LOCAL_LLM_* (адрес внутри docker-контейнеров: host.docker.internal).
 HONCHO_LLM_BASE_URL=http://host.docker.internal:1234/v1
 HONCHO_LLM_MODEL=local-coder
 
-# --- браузер (chrome-devtools) ---
+# --- браузер (chrome-devtools MCP) ---
 CHROME_PATH=/usr/bin/google-chrome
-
-# --- модели суб-агентов ---
-# Пусто (по умолчанию) = наследуют модель текущей сессии — модель берётся
-# из выбранной в opencode (/models). Задай конкретную, чтобы закрепить
-# за агентом свою модель (например AGENT_MODEL_EXPLORE=remote/main).
-AGENT_MODEL_GENERAL=
-AGENT_MODEL_EXPLORE=
-AGENT_MODEL_IMPLEMENTER=
-AGENT_MODEL_REVIEWER=
