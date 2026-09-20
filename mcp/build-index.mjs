@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * build-index.mjs — строит RAG-индекс кода любого проекта (openai-нейтральный).
- * Чанки кода -> sqlite (rag/notix.db) + генерация PROJECT_KNOWLEDGE.md (каркас базы знаний).
+ * Чанки кода -> sqlite (rag/index.db) + генерация PROJECT_KNOWLEDGE.md (каркас базы знаний).
  * Эмбеддинги добавляются отдельным проходом: embed.mjs (после запуска bge-m3 :8095).
  *
  * Запуск:
@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, ".."); // корень репо opencode-env
 const RAG_ROOT = process.env.RAG_ROOT || ".";
-const DB_PATH = process.env.RAG_DB ?? path.join(ROOT, "rag", "notix.db");
+const DB_PATH = process.env.RAG_DB ?? path.join(ROOT, "rag", "index.db");
 const KB_PATH = process.env.RAG_KB ?? path.join(ROOT, "rag", "PROJECT_KNOWLEDGE.md");
 
 const EXCLUDE_DIRS = new Set([

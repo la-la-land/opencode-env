@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * embed.mjs — эмбеддинг-проход: считает bge-m3 вектора для всех чанков и кладёт в notix.db (таблица vecs).
+ * embed.mjs — эмбеддинг-проход: считает bge-m3 вектора для всех чанков и кладёт в index.db (таблица vecs).
  * Требует запущенный llama-server с моделью bge-m3 на :8095:
  *   llama-server -m models/bge-m3-q8_0.gguf --embedding --port 8095 -c 8192
  * Запуск: node embed.mjs
@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, ".."); // корень репо opencode-env
-const DB_PATH = process.env.RAG_DB ?? path.join(ROOT, "rag", "notix.db");
+const DB_PATH = process.env.RAG_DB ?? path.join(ROOT, "rag", "index.db");
 const EMBED_URL = "http://127.0.0.1:8095/v1/embeddings";
 const BATCH = 24;
 

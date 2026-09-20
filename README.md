@@ -118,7 +118,7 @@ make set-agent-model AGENT=explore MODEL=remote/main
 
 | Сервер | Что делает |
 |---|---|
-| `rag` | поиск по коду проекта (лексика + BM25 + семантика bge-m3), база знаний `PROJECT_KNOWLEDGE.md` (инструменты `notix_search`, `notix_where`, `notix_summary`, `notix_stats`, `notix_kb_read`, `notix_kb_add`) |
+| `rag` | поиск по коду проекта (лексика + BM25 + семантика bge-m3), база знаний `PROJECT_KNOWLEDGE.md` (инструменты `rag_search`, `rag_where`, `rag_summary`, `rag_stats`, `kb_read`, `kb_add`) |
 | `vision` | картинки: метаданные, OCR (offline), `describe_image` через любую OpenAI-совместимую vision-модель. Выключен, пока не задан `VISION_MODEL` |
 | `chrome-devtools` | браузерная автоматизация (находит Chrome по `CHROME_PATH` в `stack.config`) |
 | `playwright` | браузерная автоматизация |
@@ -133,7 +133,7 @@ RAG_ROOT=/path/to/your/project node mcp/build-index.mjs
 node mcp/embed.mjs
 ```
 
-Пути индекса: `rag/notix.db` и `rag/PROJECT_KNOWLEDGE.md` (переопределяются
+Пути индекса: `rag/index.db` и `rag/PROJECT_KNOWLEDGE.md` (переопределяются
 `RAG_DB`, `RAG_KB`, `RAG_ROOT`, `RAG_EMBED_URL`). Всё — в `.gitignore`.
 
 ## Honcho (локальная память агента)

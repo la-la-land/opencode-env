@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * notix-rag.mjs — MCP-сервер RAG по коду notix (stdio, JSON-RPC, стиль qwen-image.mjs).
+ * rag-server.mjs — MCP-сервер RAG по коду проекта (stdio, JSON-RPC).
  * Инструменты:
- *   notix_search(query, n)        — гибридный поиск (лексика + точные символы + семантика если embed доступен)
- *   notix_where(symbol, n)        — где определён класс/функция/символ
- *   notix_summary(path)           — сводка по файлу/модулю
- *   notix_stats()                 — статистика индекса
- *   notix_kb_read()               — содержимое PROJECT_KNOWLEDGE.md
- *   notix_kb_add(fact)            — дописать факт в PROJECT_KNOWLEDGE.md
+ *   rag_search(query, n)          — гибридный поиск (лексика + точные символы + семантика если embed доступен)
+ *   rag_where(symbol, n)          — где определён класс/функция/символ
+ *   rag_summary(path)             — сводка по файлу/модулю
+ *   rag_stats()                   — статистика индекса
+ *   kb_read()                     — содержимое PROJECT_KNOWLEDGE.md
+ *   kb_add(fact)                  — дописать факт в PROJECT_KNOWLEDGE.md
  */
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, ".."); // корень репо opencode-env
-const DB_PATH = process.env.RAG_DB ?? path.join(ROOT, "rag", "notix.db");
+const DB_PATH = process.env.RAG_DB ?? path.join(ROOT, "rag", "index.db");
 const KB_PATH = process.env.RAG_KB ?? path.join(ROOT, "rag", "PROJECT_KNOWLEDGE.md");
 const PROJECT_ROOT = process.env.RAG_ROOT ?? ".";
 const EMBED_URL = process.env.RAG_EMBED_URL ?? "http://127.0.0.1:8095/v1/embeddings";
@@ -225,8 +225,8 @@ function jsonrpcError(id, code, message) { return JSON.stringify({ jsonrpc: "2.0
 
 const tools = [
   {
-    name: "notix_search",
-    description: "Семантико-лексический поиск по коду проекта notix (Laravel/PHP, Flutter/Dart, JS/TS, SQL). " +
+    name: "rag_search",
+    description: "Семантико-лексический поиск по коду проекта. " +
       "Запрос — фраза как к пользователю («биллинг», «как делается рассылка в Telegram»). Возвращает top-N " +
       "мест с путём, строками и сниппетом кода. Используй ПЕРВЫМ перед чтением крупных файлов.",
     inputSchema: {
@@ -240,8 +240,8 @@ const tools = [
     },
   },
   {
-    name: "notix_where",
-    description: "Точно найти, где определён класс/функция/символ в notix (например OrderController, applyDiscount).",
+    name: "rag_where",
+    description: "Точно найти, где определён класс/функция/символ (например OrderController, applyDiscount).",
     inputSchema: {
       type: "object",
       properties: {
@@ -252,27 +252,27 @@ const tools = [
     },
   },
   {
-    name: "notix_summary",
-    description: "Сводка по конкретному файлу/модулю notix: первые 25 строк + статистика. Путь — относительный или абсолютный.",
+    name: "rag_summary",
+    description: "Сводка по конкретному файлу/модулю: первые 25 строк + статистика. Путь — относительный или абсолютный.",
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string", description: "Путь к файлу в notix" } },
+      properties: { path: { type: "string", description: "Путь к файлу" } },
       required: ["path"],
     },
   },
   {
-    name: "notix_stats",
+    name: "rag_stats",
     description: "Статистика индекса RAG: число чанков, языки, готовность эмбеддингов, путь базы знаний.",
     inputSchema: { type: "object", properties: {} },
   },
   {
-    name: "notix_kb_read",
+    name: "kb_read",
     description: "Прочитать накопительную базу знаний проекта (PROJECT_KNOWLEDGE.md): архитектурные факты, решения, ссылки. " +
-      "Вызывай при старте работы в notix и перед незнакомыми задачами, чтобы не перечитывать проект заново.",
+      "Вызывай при старте работы и перед незнакомыми задачами, чтобы не перечитывать проект заново.",
     inputSchema: { type: "object", properties: {} },
   },
   {
-    name: "notix_kb_add",
+    name: "kb_add",
     description: "Добавить факт в базу знаний проекта (PROJECT_KNOWLEDGE.md). Используй после изучения крупного модуля, " +
       "важного решения, найденной закономерности — чтобы следующая сессия не искала заново.",
     inputSchema: {
@@ -287,7 +287,7 @@ async function handleRequest(msg) {
   const { id, method, params } = msg;
   switch (method) {
     case "initialize":
-      return jsonrpc(id, { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "notix-rag", version: "1.0.0" } });
+      return jsonrpc(id, { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "rag-server", version: "1.0.0" } });
     case "notifications/initialized":
       return null;
     case "tools/list":
@@ -297,12 +297,12 @@ async function handleRequest(msg) {
       try {
         const a = args || {};
         let text;
-        if (name === "notix_search") text = await search(String(a.query || ""), Math.min(20, a.n || 5), a.semantic !== false);
-        else if (name === "notix_where") text = await where(String(a.symbol || ""), a.n || 5);
-        else if (name === "notix_summary") text = summary(String(a.path || ""));
-        else if (name === "notix_stats") text = stats();
-        else if (name === "notix_kb_read") text = kbRead();
-        else if (name === "notix_kb_add") text = kbAdd(String(a.fact || ""));
+        if (name === "rag_search") text = await search(String(a.query || ""), Math.min(20, a.n || 5), a.semantic !== false);
+        else if (name === "rag_where") text = await where(String(a.symbol || ""), a.n || 5);
+        else if (name === "rag_summary") text = summary(String(a.path || ""));
+        else if (name === "rag_stats") text = stats();
+        else if (name === "kb_read") text = kbRead();
+        else if (name === "kb_add") text = kbAdd(String(a.fact || ""));
         else return jsonrpcError(id, -32602, `Unknown tool: ${name}`);
         return jsonrpc(id, { content: [{ type: "text", text }] });
       } catch (e) {
