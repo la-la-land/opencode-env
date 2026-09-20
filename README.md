@@ -260,6 +260,7 @@ start.sh                 стек-менеджер (all/infra/embed/main/qdrant/
 Makefile                 обёртки над setup/configure/start; install-bin — глобальный `rag`
 stack.config.example     настройки MCP-стеков (vision, honcho, chrome)
 agents/                  кастомные агенты (implementer, reviewer)
+skills/                  скиллы агентам: auto-tz (ТЗ→оркестрация), subagent-orchestrator, browser-automation
 mcp/                     MCP-серверы: rag-server (поиск), honcho-server (память),
                          vision-server; rag-lib.mjs (ядро поиска) + rag-cli.mjs (CLI),
                          build-index.mjs/embed.mjs (индексация)
@@ -267,12 +268,30 @@ honcho/                  развёртывание локальной памя�
 qdrant/config.yaml       конфиг Qdrant (:6333, dim 1024)
 ```
 
+## Скиллы (агентные навыки)
+
+В `skills/` лежат три скилла для opencode (кладутся в `~/.config/opencode/skills/`):
+
+| Скилл | Зачем |
+|---|---|
+| `auto-tz` | постановка задачи: CLARIFY → PLAN → APPROVE → IMPLEMENT через sub-agent'ов; шаблон `TASK.md` |
+| `subagent-orchestrator` | адаптивный пайплайн explore/plan/implement/QA; когда и сколько sub-agent'ов |
+| `browser-automation` | авто-проверка UI через chrome-devtools / playwright MCP |
+
+Установка (симлинки, не копии — правки в репо сразу видны агенту):
+
+```sh
+make install-skills
+```
+
 ## FAQ
 
 - **Нет GPU?** `make setup` — только инфраструктура; любую модель выбираешь в
   opencode `/models` (удалённые провайдеры — нативно). Эмбеддинги/RAG работают на CPU.
+- **Локальная Gemma?** `make model-gemma` — установка + авто-регистрация провайдера
+  `local` с моделью `local/gemma` («Local Gemma 4 12B it»); после этого выбор в `/models`.
 - **Хочу другую локальную модель?** Положи GGUF в `models/`, замени
-  `LOCAL_LLM_MODEL`/`--alias` в `stack.config` и `start.sh`.
+  `LOCAL_LLM_MODEL`/`--alias` в `stack.config` и `start.sh` — модель останется `local/gemma`.
 - **Vision?** `make set-vision MODEL=... BASE=... KEY=...` — vision-mcp
   подключится; `describe_image` работает через любую OpenAI-совместимую
   мультимодалку.

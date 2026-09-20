@@ -35,6 +35,8 @@ const INCLUDE_EXT = new Set([".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".vue"
 const EXCLUDE_FILES = new Set([
   "composer.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "pubspec.lock", "go.sum", "Cargo.lock",
 ]);
+// Защита от «гигантских» текстовых файлов (дампы БД, логи): > RAG_MAX_FILE_MB не индексируем.
+const MAX_FILE_MB = Number(process.env.RAG_MAX_FILE_MB ?? 16);
 
 // ---------- аргументы ----------
 function parseArgs(argv) {
@@ -89,6 +91,9 @@ function* walkFiles(dir) {
       if (!INCLUDE_EXT.has(ext)) continue;
       if (EXCLUDE_FILES.has(e.name)) continue;
       if (e.name.endsWith(".min.js") || e.name.endsWith(".min.css")) continue;
+      let st;
+      try { st = fs.statSync(p); } catch { continue; }
+      if (st.size > MAX_FILE_MB * 1024 * 1024) continue; // дампы/логи — мимо
       yield p;
     }
   }

@@ -11,8 +11,9 @@
 MODEL     ?= none
 WITH_HONCHO ?= 0
 BIN_DIR   ?= $(HOME)/.local/bin
+SKILLS_DIR ?= $(HOME)/.config/opencode/skills
 
-.PHONY: setup models model-gemma config set-vision install-bin start infra stop health honcho clean help
+.PHONY: setup models model-gemma config set-vision install-bin install-skills start infra stop health honcho clean help
 
 help: ## Показать справку
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
@@ -26,6 +27,7 @@ models: ## Скачать модели: bge-m3 (RAG) всегда; Gemma — т�
 
 model-gemma: ## Установить локальную Gemma 4 12B (отдельная команда) + CUDA-сборка llama.cpp
 	./setup.sh --model gemma --backend local --skip-qdrant --skip-honcho --force-llamacpp
+	./configure.sh  ## сразу регистрирует провайдер local + модель local/gemma в opencode
 
 config: ## Перегенерировать конфиги из stack.config (opencode.json, honcho/.env)
 	./configure.sh
@@ -39,6 +41,16 @@ install-bin: ## Глобальная команда rag → $(BIN_DIR)/rag (пр
 	@echo "rag установлен: $(BIN_DIR)/rag"
 	@echo "  rag index               — индекс текущего каталога + вектора в Qdrant"
 	@echo "  rag search \"запрос\"     — поиск → md-таблица"
+
+install-skills: ## Симлинк скиллов репо (auto-tz, subagent-orchestrator, browser-automation) в ~/.config/opencode/skills
+	@mkdir -p $(SKILLS_DIR)
+	@for s in auto-tz subagent-orchestrator browser-automation; do \
+	  if [ -e "$(SKILLS_DIR)/$$s" ]; then \
+	    echo "[skip] $$s уже установлен ($(SKILLS_DIR)/$$s)"; \
+	  else \
+	    ln -s $(CURDIR)/skills/$$s "$(SKILLS_DIR)/$$s" && echo "[ok] $$s -> $(SKILLS_DIR)/$$s"; \
+	  fi; \
+	done
 
 start: ## Поднять стек (embed :8095, main :1234, qdrant :6333)
 	./start.sh all

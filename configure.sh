@@ -57,6 +57,7 @@ VISION_BASE_URL="${VISION_BASE_URL:-}"
 VISION_API_KEY="${VISION_API_KEY:-}"
 CHROME_PATH="${CHROME_PATH:-/usr/bin/google-chrome}"
 HONCHO_BASE_URL="${HONCHO_BASE_URL:-http://127.0.0.1:8000}"
+LOCAL_PROVIDER="${LOCAL_PROVIDER:-1}"    # 0 = не добавлять провайдер local (llama.cpp)
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 
 # ---------- команды ----------
@@ -82,7 +83,7 @@ mkdir -p "$(dirname "$OUT")"
 [ -f "$OUT" ] && [ "${1:-}" != "--print" ] && cp "$OUT" "$OUT.bak.$(date +%s)" 2>/dev/null || true
 
 export ROOT LOCAL_LLM_BASE_URL LOCAL_LLM_MODEL VISION_MODEL VISION_BASE_URL VISION_API_KEY \
-       CHROME_PATH HONCHO_BASE_URL MERGE_FORCE="$FORCE" OUT
+       CHROME_PATH HONCHO_BASE_URL LOCAL_PROVIDER MERGE_FORCE="$FORCE" OUT
 
 python3 - "$OUT" <<'PY'
 import json, os, sys
@@ -115,22 +116,25 @@ was_existing = bool(cfg)
 # Модель в конфиг не пишем: основная — та, что выбрана в сессии (/models).
 # Существующий "model" (личный выбор юзера) не трогаем.
 
-# ---------- провайдеры: только local (llama.cpp — наша инфраструктура) ----------
-# Удалённые провайдеры добавляются нативно: opencode /providers, auth login, provider add.
-providers = cfg.setdefault("providers", {})
-providers["local"] = {
-    "name": "Local llama.cpp (:1234)",
-    "package": "@opencode/ai/providers/openai-compatible",
-    "settings": {"baseURL": local_b, "apiKey": "local"},
-    "models": {
-        "coder": {
-            "modelID": local_m,
-            "name": "Gemma 4 12B it (256K)",
-            "capabilities": {"tools": True, "input": ["text"], "output": ["text"]},
-            "limit": {"context": 262144, "output": 65536},
-        }
-    },
-}
+# ---------- провайдеры: local (llama.cpp) — только по явному желанию ----------
+# LOCAL_PROVIDER=0 (stack.config или env) — не трогаем провайдеры вовсе:
+# удалённые добавляются нативно (opencode /providers, auth login, provider add),
+# существующие (наш провайдер local или чужой) остаются как есть.
+if os.environ.get("LOCAL_PROVIDER", "1") != "0":
+    providers = cfg.setdefault("providers", {})
+    providers["local"] = {
+        "name": "Local llama.cpp (:1234)",
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {"baseURL": local_b, "apiKey": "local"},
+        "models": {
+            "gemma": {
+                "modelID": local_m,
+                "name": "Local Gemma 4 12B it (256K)",
+                "capabilities": {"tools": True, "input": ["text"], "output": ["text"]},
+                "limit": {"context": 262144, "output": 65536},
+            }
+        },
+    }
 
 # ---------- MCP (добавляем/обновляем ТОЛЬКО свои серверы) ----------
 servers_ours = {
