@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 /**
- * build-index.mjs — строит RAG-индекс кода любого проекта (openai-нейтральный).
- * Чанки кода -> sqlite (rag/index.db) + генерация PROJECT_KNOWLEDGE.md (каркас базы знаний).
- * Эмбеддинги добавляются отдельным проходом: embed.mjs (после запуска bge-m3 :8095).
+ * build-index.mjs — строит RAG-индекс кода проекта (мульти-проект).
+ *
+ * Каждый проект индексируется в свой каталог:
+ *   rag/projects/<name>/index.db             — чанки кода (sqlite)
+ *   rag/projects/<name>/PROJECT_KNOWLEDGE.md — база знаний проекта
+ *   rag/projects/<name>/project.path         — абсолютный путь к исходникам
+ *
+ * Имя проекта: --name, либо (по умолчанию) имя каталога источников.
+ * Актуальный проект MCP-сервер определяет по рабочей директории (cwd) —
+ * там, где запущен opencode.
  *
  * Запуск:
- *   node mcp/build-index.mjs                      # индексировать текущий каталог
- *   RAG_ROOT=/path/to/project node mcp/build-index.mjs
- *   RAG_DB=/x/idx.db RAG_KB=/x/KB.md node mcp/build-index.mjs
+ *   node mcp/build-index.mjs --project /path/to/project [--name alias]
+ *   RAG_ROOT=/path RAG_NAME=alias node mcp/build-index.mjs
+ *   node mcp/build-index.mjs --list            # показать проиндексированные проекты
  */
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
@@ -16,9 +23,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, ".."); // корень репо opencode-env
-const RAG_ROOT = process.env.RAG_ROOT || ".";
-const DB_PATH = process.env.RAG_DB ?? path.join(ROOT, "rag", "index.db");
-const KB_PATH = process.env.RAG_KB ?? path.join(ROOT, "rag", "PROJECT_KNOWLEDGE.md");
+const PROJECTS_DIR = process.env.RAG_PROJECTS_DIR ?? path.join(ROOT, "rag", "projects");
 
 const EXCLUDE_DIRS = new Set([
   "node_modules", "vendor", "dist", "build", ".git", ".idea", "storage",
@@ -31,8 +36,31 @@ const EXCLUDE_FILES = new Set([
   "composer.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "pubspec.lock", "go.sum", "Cargo.lock",
 ]);
 
-/** Токенизация для поиска: snake_case + camelCase -> токены, нижний регистр */
-export function tokenize(text) {
+// ---------- аргументы ----------
+function parseArgs(argv) {
+  const args = { project: null, name: null, list: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--list") args.list = true;
+    else if (a === "--project") args.project = argv[++i];
+    else if (a === "--name") args.name = argv[++i];
+    else if (a.startsWith("--project=")) args.project = a.split("=")[1];
+    else if (a.startsWith("--name=")) args.name = a.split("=")[1];
+  }
+  args.project = args.project ?? process.env.RAG_ROOT ?? null;
+  args.name = args.name ?? process.env.RAG_NAME ?? null;
+  return args;
+}
+
+// ---------- утилиты ----------
+function listProjects() {
+  let names = [];
+  try { names = fs.readdirSync(PROJECTS_DIR).filter((n) => fs.existsSync(path.join(PROJECTS_DIR, n, "project.path"))); }
+  catch { /* нет каталога */ }
+  return names.sort();
+}
+
+function tokenize(text) {
   const t = text
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/_/g, " ")
@@ -41,7 +69,7 @@ export function tokenize(text) {
   const seen = new Set();
   const uniq = [];
   for (const w of tokens) {
-    const n = w.replace(/s$/, ""); // лёгкий стемминг только для индекса совпадений
+    const n = w.replace(/s$/, "");
     if (!seen.has(n)) { seen.add(n); uniq.push(n); }
   }
   return uniq;
@@ -88,14 +116,12 @@ function chunkFile(filePath, relPath) {
   }));
 }
 
-/** Каркас базы знаний: AGENTS.md (глубина 2) + дерево каталогов */
-function generateKBBase() {
-  const lines = [`# PROJECT_KNOWLEDGE.md — накопительная база знаний (${path.basename(path.resolve(RAG_ROOT))})`, ""];
+function generateKBBase(srcRoot, name) {
+  const lines = [`# PROJECT_KNOWLEDGE.md — накопительная база знаний (${name})`, ""];
   lines.push("> Авто-часть (структура, статистика) перегенерируется build-index.mjs.");
   lines.push("> Раздел «Факты и решения» пополняется агентом через MCP-инструмент kb_add — не удалять произвольно.", "");
-  // AGENTS.md на глубине <= 2
   const found = [];
-  const q = [[RAG_ROOT, 0]];
+  const q = [[srcRoot, 0]];
   while (q.length && found.length < 5) {
     const [d, depth] = q.shift();
     if (depth > 2) continue;
@@ -112,13 +138,12 @@ function generateKBBase() {
   }
   for (const ag of found.slice(0, 5)) {
     const txt = fs.readFileSync(ag, "utf8").split("\n").slice(0, 40).join("\n");
-    lines.push(`## ${path.relative(RAG_ROOT, ag)} (выдержка)`, "```", txt, "```", "");
+    lines.push(`## ${path.relative(srcRoot, ag)} (выдержка)`, "```", txt, "```", "");
   }
-  // дерево каталогов (2 уровня)
   lines.push("## Структура каталогов", "");
-  for (const d of fs.readdirSync(RAG_ROOT, { withFileTypes: true })) {
+  for (const d of fs.readdirSync(srcRoot, { withFileTypes: true })) {
     if (!d.isDirectory() || EXCLUDE_DIRS.has(d.name)) continue;
-    const sub = fs.readdirSync(path.join(RAG_ROOT, d.name), { withFileTypes: true })
+    const sub = fs.readdirSync(path.join(srcRoot, d.name), { withFileTypes: true })
       .filter((e) => e.isDirectory() && !EXCLUDE_DIRS.has(e.name))
       .map((e) => e.name);
     lines.push(`- \`${d.name}/\`${sub.length ? " — " + sub.slice(0, 8).join(", ") + (sub.length > 8 ? "…" : "") : ""}`);
@@ -127,9 +152,50 @@ function generateKBBase() {
   return lines.join("\n");
 }
 
+// ---------- main ----------
 function main() {
-  console.log(`Индексирую: ${path.resolve(RAG_ROOT)}`);
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+  const args = parseArgs(process.argv.slice(2));
+
+  if (args.list) {
+    const names = listProjects();
+    if (!names.length) { console.log("Индексов нет. Создай: node mcp/build-index.mjs --project /path/to/project"); return; }
+    console.log("Проиндексированные проекты:");
+    for (const n of names) {
+      const p = fs.readFileSync(path.join(PROJECTS_DIR, n, "project.path"), "utf8").trim();
+      console.log(`  - ${n}  (${p})`);
+    }
+    return;
+  }
+
+  if (!args.project) {
+    console.error("Укажи проект: node mcp/build-index.mjs --project /path/to/project [--name alias]");
+    console.error("  или RAG_ROOT=/path node mcp/build-index.mjs");
+    process.exit(1);
+  }
+  const srcRoot = path.resolve(args.project);
+  if (!fs.existsSync(srcRoot) || !fs.statSync(srcRoot).isDirectory()) {
+    console.error(`Нет такого каталога: ${srcRoot}`);
+    process.exit(1);
+  }
+
+  const name = args.name || path.basename(srcRoot);
+  const projDir = path.join(PROJECTS_DIR, name);
+  // конфликт имён: другой путь с тем же именем
+  const pp = path.join(projDir, "project.path");
+  if (fs.existsSync(pp)) {
+    const prev = fs.readFileSync(pp, "utf8").trim();
+    if (prev !== srcRoot) {
+      console.error(`Имя «${name}» уже занято проектом: ${prev}\n  Укажи другое: --name alias`);
+      process.exit(1);
+    }
+  }
+  fs.mkdirSync(projDir, { recursive: true });
+  fs.writeFileSync(pp, srcRoot + "\n");
+
+  const DB_PATH = path.join(projDir, "index.db");
+  const KB_PATH = path.join(projDir, "PROJECT_KNOWLEDGE.md");
+  console.log(`Индексирую: ${srcRoot}  →  ${name}`);
+
   const db = new DatabaseSync(DB_PATH);
   db.exec(`CREATE TABLE IF NOT EXISTS chunks(
     id INTEGER PRIMARY KEY, path TEXT NOT NULL, lang TEXT,
@@ -140,8 +206,8 @@ function main() {
   const ins = db.prepare("INSERT INTO chunks(path,lang,start_line,end_line,text,tokens) VALUES(?,?,?,?,?,?)");
   let n = 0, files = 0, skipped = 0;
   const byLang = {};
-  for (const filePath of walkFiles(RAG_ROOT)) {
-    const relPath = path.relative(RAG_ROOT, filePath);
+  for (const filePath of walkFiles(srcRoot)) {
+    const relPath = path.relative(srcRoot, filePath);
     try {
       const chunks = chunkFile(filePath, relPath);
       for (const c of chunks) {
@@ -156,8 +222,7 @@ function main() {
   db.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES('files',?)").run(String(files));
   db.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES('built_at',?)").run(new Date().toISOString());
 
-  // база знаний
-  const kb = generateKBBase();
+  const kb = generateKBBase(srcRoot, name);
   const head = `## Сгенерировано (${new Date().toISOString().slice(0, 16)})\n- Файлов: **${files}** (пропущено: ${skipped})\n- Чанков: **${n}**\n${Object.entries(byLang).filter(([k]) => k).map(([k, v]) => `- ${k}: ${v} файлов`).join("\n")}\n\n## Факты и решения (пополняется агентом через kb_add)\n`;
   let final;
   if (fs.existsSync(KB_PATH)) {
@@ -167,8 +232,8 @@ function main() {
     final = kb + "\n" + head;
   }
   fs.writeFileSync(KB_PATH, final);
-  console.log(`OK: проиндексировано ${files} файлов, ${n} чанков. Пропущено ${skipped}. Языки:`, byLang);
-  console.log(`DB: ${DB_PATH}\nKB: ${KB_PATH}`);
+  console.log(`OK: ${files} файлов, ${n} чанков (пропущено ${skipped}). Языки:`, byLang);
+  console.log(`  ${DB_PATH}\n  ${KB_PATH}`);
 }
 
 main();

@@ -8,6 +8,8 @@
 #
 # Usage:
 #   ./configure.sh                          перегенерировать из stack.config
+#   ./configure.sh --dir /path/to/project   сгенерировать opencode.json в проект
+#   ./configure.sh --if-missing            не перезаписывать существующий конфиг
 #   ./configure.sh set-model local|remote MODEL   переключить основную модель
 #   ./configure.sh set-vision MODEL BASE_URL [API_KEY]   включить vision
 #   ./configure.sh set-agent-model AGENT MODEL   модель конкретного суб-агента
@@ -16,6 +18,19 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
+
+# --- флаги ---
+TARGET_DIR=""
+IF_MISSING=0
+EXTRA=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dir) TARGET_DIR="$2"; shift 2 ;;
+    --if-missing) IF_MISSING=1; shift ;;
+    *) EXTRA+=("$1"); shift ;;
+  esac
+done
+set -- "${EXTRA[@]}"
 
 CONF="$ROOT/stack.config"
 [ -f "$CONF" ] && . "$CONF" || true
@@ -31,13 +46,14 @@ VISION_MODEL="${VISION_MODEL:-}"
 VISION_BASE_URL="${VISION_BASE_URL:-}"
 VISION_API_KEY="${VISION_API_KEY:-}"
 CHROME_PATH="${CHROME_PATH:-/usr/bin/google-chrome}"
+HONCHO_BASE_URL="${HONCHO_BASE_URL:-http://127.0.0.1:8000}"
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 
-# Модели суб-агентов (пусто = наследовать модель сессии)
+# Модели суб-агентов (пусто = наследовать модель сессии — главный режим)
 AGENT_MODEL_GENERAL="${AGENT_MODEL_GENERAL:-}"
 AGENT_MODEL_EXPLORE="${AGENT_MODEL_EXPLORE:-}"
-AGENT_MODEL_IMPLEMENTER="${AGENT_MODEL_IMPLEMENTER:-local/coder}"
-AGENT_MODEL_REVIEWER="${AGENT_MODEL_REVIEWER:-local/coder}"
+AGENT_MODEL_IMPLEMENTER="${AGENT_MODEL_IMPLEMENTER:-}"
+AGENT_MODEL_REVIEWER="${AGENT_MODEL_REVIEWER:-}"
 
 # ---------- команды ----------
 case "${1:-gen}" in
@@ -69,11 +85,16 @@ esac
 
 # ---------- генерация opencode.json ----------
 [ "$1" = "--print" ] && OUT=/dev/stdout || OUT="$CONFIG_DIR/opencode.json"
-mkdir -p "$CONFIG_DIR"
+if [ -n "$TARGET_DIR" ]; then OUT="$TARGET_DIR/opencode.json"; fi
+if [ -f "$OUT" ] && [ "$IF_MISSING" = "1" ]; then
+  echo "[ok] конфиг уже есть: $OUT (--if-missing) — пропускаю генерацию"
+  exit 0
+fi
+mkdir -p "$(dirname "$OUT")"
 [ -f "$OUT" ] && [ "$1" != "--print" ] && cp "$OUT" "$OUT.bak.$(date +%s)" 2>/dev/null || true
 
 export ROOT LOCAL_LLM_BASE_URL LOCAL_LLM_MODEL REMOTE_BASE_URL REMOTE_API_KEY REMOTE_MODEL \
-       OPENCODE_MODEL VISION_MODEL VISION_BASE_URL VISION_API_KEY CHROME_PATH \
+       OPENCODE_MODEL VISION_MODEL VISION_BASE_URL VISION_API_KEY CHROME_PATH HONCHO_BASE_URL \
        AGENT_MODEL_GENERAL AGENT_MODEL_EXPLORE AGENT_MODEL_IMPLEMENTER AGENT_MODEL_REVIEWER
 
 python3 - "$OUT" <<'PY'
@@ -124,8 +145,14 @@ for name in ("general","explore","implementer","reviewer"):
         agents[name] = {"model": m}
 # implementer/reviewer объявлены и в agents/*.md — здесь только модель
 
+honcho_b = os.environ.get("HONCHO_BASE_URL","http://127.0.0.1:8000")
+
 servers = {
   "rag": {"type":"local","command":["node", f"{root}/mcp/rag-server.mjs"], "enabled": True},
+  "honcho": {"type":"local",
+        "command":["node", f"{root}/mcp/honcho-server.mjs"],
+        "environment":{"HONCHO_BASE_URL": honcho_b},
+        "enabled": True},
   "chrome-devtools": {"type":"local","command":[
         "npx","-y","chrome-devtools-mcp@latest","--headless","--no-sandbox",
         "--chromeArg=--no-sandbox","--chromeArg=--disable-setuid-sandbox",
@@ -177,4 +204,8 @@ echo "  локальная LLM:   $LOCAL_LLM_BASE_URL ($LOCAL_LLM_MODEL)"
 [ -n "$remote_b" ] && echo "  удалённая LLM:   $REMOTE_BASE_URL ($REMOTE_MODEL)" || echo "  удалённая LLM:   не настроена (добавь REMOTE_* в stack.config)"
 [ -n "$vis_m" ] && echo "  vision:          $VISION_MODEL (@ $VIS_BASE_URL)" || echo "  vision:          выключен (configure.sh set-vision ...)"
 echo
-echo "Проверь: opencode → /models (выбор модели в сессии), mcp список, конфиг: $( [ "$1" = "--print" ] && echo stdout || echo $CONFIG_DIR/opencode.json )"
+CFG_PATH="${TARGET_DIR:+$TARGET_DIR/opencode.json}"
+[ -z "$TARGET_DIR" ] && CFG_PATH="$CONFIG_DIR/opencode.json"
+echo "Проверь: opencode → /models (выбор модели в сессии: локальная или удалённая), mcp список."
+echo "Конфиг: $( [ "$1" = "--print" ] && echo stdout || echo "$CFG_PATH" )"
+[ -n "$CFG_PATH" ] && [ "$1" != "--print" ] && [ ! -f "$CFG_PATH" ] && echo "  (opencode.json записан в $CFG_PATH — opencode подхватит его автоматически)"

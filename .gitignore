@@ -5,6 +5,7 @@ llama.cpp-bin/
 *.log
 *.db
 rag/*.db
+rag/projects/
 qdrant/qdrant
 qdrant/storage/
 qdrant/*.log

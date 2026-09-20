@@ -5,21 +5,27 @@
 # Qdrant, honcho). Идемпотентен: можно перезапускать.
 #
 # Usage:
-#   ./setup.sh [--model gemma|30b|none] [--backend local|remote]
-#              [--honcho 0|1] [--config-only] [--skip-*]
+#   ./setup.sh [--model gemma|none] [--backend local|remote]
+#              [--honcho 0|1] [--config-only] [--force-llamacpp] [--skip-*]
 #
 # Переменные окружения: MODEL_CHOICE, BACKEND, WITH_HONCHO,
 #   LLAMACPP_TAG (тег/коммит llama.cpp для сборки), HONCHO_SRC.
+#   --model gemma — поставить локальную Gemma (llama.cpp с CUDA, 6.7 GB).
+#   --force-llamacpp — пересобрать llama.cpp, даже если уже собран.
 # ============================================================
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
 # ---------- параметры ----------
-MODEL_CHOICE="${MODEL_CHOICE:-gemma}"      # gemma | none
-BACKEND="${BACKEND:-local}"                # local | remote
-WITH_HONCHO="${WITH_HONCHO:-0}"            # 0 | 1
+# Локальная LLM (Gemma) НЕ ставится по умолчанию — только явно: --model gemma
+# (или make model-gemma). Инфраструктура (embed/Qdrant/honcho) ставится всегда,
+# модель для агентов берётся из выбранной в opencode-сессии (/models) и stack.config.
+MODEL_CHOICE="${MODEL_CHOICE:-none}"      # none (по умолчанию) | gemma
+BACKEND="${BACKEND:-local}"               # local | remote (remote = без локальной LLM)
+WITH_HONCHO="${WITH_HONCHO:-0}"           # 0 | 1
 DO_CONFIG_ONLY=0
+FORCE_LLAMACPP=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -27,6 +33,7 @@ while [ $# -gt 0 ]; do
     --backend) BACKEND="$2";      shift 2 ;;
     --honcho)  WITH_HONCHO="$2";  shift 2 ;;
     --config-only) DO_CONFIG_ONLY=1; shift ;;
+    --force-llamacpp) FORCE_LLAMACPP=1; shift ;;
     --skip-llamacpp) SKIP_LLAMACPP=1; shift ;;
     --skip-qdrant)   SKIP_QDRANT=1;   shift ;;
     --skip-honcho)   SKIP_HONCHO=1;   shift ;;
@@ -61,7 +68,8 @@ detect_gpu() {
 # 2. CUDA-рантайм через pip (без системного CUDA toolkit)
 # ============================================================
 install_cuda_pip() {
-  if [ "$BACKEND" = "remote" ]; then return 0; fi
+  # CUDA-рантайм нужен только если ставим локальную LLM (gemma) на GPU
+  if [ "$BACKEND" = "remote" ] || [ "$MODEL_CHOICE" != "gemma" ]; then return 0; fi
   python3 - <<'PY' >/dev/null 2>&1 && return 0
 import importlib.util
 ok = all(importlib.util.find_spec(m) for m in ["nvidia.cublas","nvidia.cuda_runtime"])
@@ -78,12 +86,18 @@ PY
 }
 
 # ============================================================
-# 3. llama.cpp (бинарь llama-server)
+# 3. llama.cpp (бинарь llama-server — нужен и для embed/RAG)
+#    Поддерживает: embed (bge-m3, CPU-сборки достаточно) и,
+#    если поставлена локальная Gemma, инференс (CUDA).
+#    --force-llamacpp — пересобрать (напр. после make model-gemma).
 # ============================================================
 setup_llamacpp() {
   [ "${SKIP_LLAMACPP:-0}" = "1" ] && return 0
-  [ "$BACKEND" = "remote" ] && { ok "BACKEND=remote: llama.cpp не нужен для инференса"; return 0; }
-
+  if [ "$FORCE_LLAMACPP" = "1" ]; then
+    echo "force: пересборка llama.cpp..."
+    rm -rf "$ROOT/llama.cpp-bin"
+    [ "$BACKEND" = "local" ] && [ "$MODEL_CHOICE" = "gemma" ] && rm -rf "$ROOT/llama.cpp/build"
+  fi
   if [ -x "$ROOT/llama.cpp-bin/llama-server" ]; then
     ok "llama.cpp-bin/llama-server уже есть"
     return 0
@@ -105,7 +119,14 @@ build_llamacpp() {
   local SRC="$1"
   command -v cmake >/dev/null 2>&1 || { fail "нужен cmake (sudo apt install cmake)"; exit 1; }
   command -v g++ >/dev/null 2>&1 || { fail "нужен g++ (sudo apt install build-essential)"; exit 1; }
-  cmake -S "$SRC" -B "$SRC/build" -DGGML_CUDA=ON -DGGML_CUDA_USE_PIP_PACKAGES=ON -DGGML_MTMD=ON -DCMAKE_BUILD_TYPE=Release >/dev/null
+  local cuda_flags=""
+  if [ "$BACKEND" = "local" ] && [ "$MODEL_CHOICE" = "gemma" ]; then
+    cuda_flags="-DGGML_CUDA=ON -DGGML_CUDA_USE_PIP_PACKAGES=ON -DGGML_MTMD=ON"
+    ok "собираю llama.cpp с CUDA (для локальной Gemma)"
+  else
+    warn "собираю CPU-версию llama.cpp (для embed bge-m3; локальная LLM не запрошена)"
+  fi
+  cmake -S "$SRC" -B "$SRC/build" $cuda_flags -DCMAKE_BUILD_TYPE=Release >/dev/null
   cmake --build "$SRC/build" --target llama-server -j"$(nproc)" >/dev/null
   mkdir -p "$ROOT/llama.cpp-bin"
   cp -f "$SRC/build/bin/llama-server" "$ROOT/llama.cpp-bin/" 2>/dev/null || \
@@ -132,9 +153,16 @@ dl() { # dl <url> <dest>
 
 download_models() {
   mkdir -p "$ROOT/models"
-  dl "$BGE_URL" "$ROOT/models/bge-m3-q8_0.gguf"           # эмбеддинги для RAG (всегда)
+  # bge-m3 — эмбеддинги для RAG (нужны всегда, работает на CPU)
+  dl "$BGE_URL" "$ROOT/models/bge-m3-q8_0.gguf"
+  # инференс-модель: локальная только при BACKEND=local и явном MODEL_CHOICE
   case "$MODEL_CHOICE" in
-    gemma) dl "$GEMMA_URL" "$ROOT/models/gemma-4-12b-it-Q4_K_M.gguf" ;;
+    gemma)
+      if [ "$BACKEND" = "remote" ]; then
+        warn "BACKEND=remote: локальная LLM не нужна, Gemma не качаем (LLM — удалённая)"
+      else
+        dl "$GEMMA_URL" "$ROOT/models/gemma-4-12b-it-Q4_K_M.gguf"
+      fi ;;
     none)  warn "модель инференса не качаем (MODEL_CHOICE=none) — используй удалённую или впиши свою" ;;
     *)     fail "неизвестная модель: $MODEL_CHOICE"; exit 1 ;;
   esac
@@ -170,23 +198,18 @@ setup_honcho() {
 }
 
 # ============================================================
-# 7. Конфиг opencode (из шаблона)
+# 7. Конфиг opencode — генерация через configure.sh из stack.config
+#    (создаёт ~/.config/opencode/opencode.json + honcho/.env)
+#    Конфиг уже есть → не трогаем (сгенерируй заново: ./configure.sh)
 # ============================================================
 setup_opencode_config() {
-  local cfgdir="$HOME/.config/opencode"
-  local cfg="$cfgdir/opencode.json"
+  local cfg="$HOME/.config/opencode/opencode.json"
   if [ -f "$cfg" ]; then
-    ok "конфиг opencode уже есть: $cfg (шаблон: opencode.json.example)"
+    ok "конфиг opencode уже есть: $cfg (перегенерировать: ./configure.sh)"
     return 0
   fi
-  [ "$DO_CONFIG_ONLY" = "1" ] && : # разрешаем генерацию даже в config-only
-  if [ "$DO_CONFIG_ONLY" = "1" ] || [ "$BACKEND" = "local" ]; then
-    mkdir -p "$cfgdir"
-    cp "$ROOT/opencode.json.example" "$cfg"
-    warn "создан конфиг из шаблона: $cfg"
-    warn "  → замени /PATH/TO/opencode-env на $ROOT"
-    warn "  → если используешь chrome-devtools: задай CHROME_PATH (или правь opencode.json)"
-  fi
+  "$ROOT/configure.sh"
+  ok "конфиг opencode сгенерирован из stack.config: $cfg"
 }
 
 # ============================================================
@@ -201,9 +224,15 @@ health_report() {
   check http://127.0.0.1:6333/health "Qdrant :6333"
   check http://127.0.0.1:8000/health "Honcho :8000"
   echo "================= ДАЛЬШЕ ======================="
-  echo "  ./start.sh all    — поднять стек (или make start)"
-  echo "  opencode          — запуск агентного клиента (выбор модели: /models)"
-  echo "  На сервере без GPU: BACKEND=remote ./setup.sh + настрой remote-провайдера"
+  if [ "$BACKEND" = "remote" ]; then
+    echo "  BACKEND=remote: локальной LLM нет. Запуск инфраструктуры:"
+    echo "    ./start.sh infra      — embed :8095 + qdrant :6333 (без main)"
+    echo "    make honcho           — память (docker), LLM honcho — из HONCHO_LLM_* в stack.config"
+    echo "    opencode              — модель выберешь в самом opencode (/models)"
+  else
+    echo "  ./start.sh all    — поднять стек (или make start)"
+    echo "  opencode          — запуск агентного клиента (выбор модели: /models)"
+  fi
 }
 
 # ============================================================
@@ -219,6 +248,7 @@ main() {
   setup_honcho
   setup_opencode_config
   health_report
-  ok "Установка завершена. Модели: models/, запуск: ./start.sh all"
+  [ "$BACKEND" = "remote" ] && ok "Установка завершена (без локальной LLM). Модель: удалённая (stack.config / /models). Запуск: ./start.sh infra" \
+                              || ok "Установка завершена. Модели: models/, запуск: ./start.sh all"
 }
 main

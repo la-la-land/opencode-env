@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 /**
- * rag-server.mjs — MCP-сервер RAG по коду проекта (stdio, JSON-RPC).
+ * rag-server.mjs — MCP-сервер RAG по коду (мульти-проектный).
+ *
+ * Индексы хранятся по проектам: rag/projects/<name>/ (см. build-index.mjs).
+ * Активный проект определяется по рабочей директории (cwd) процесса opencode:
+ * выбирается проект, чей путь — самый длинный префикс текущего каталога.
+ * Можно явно указать проект в любом инструменте (параметр project).
+ *
  * Инструменты:
- *   rag_search(query, n)          — гибридный поиск (лексика + точные символы + семантика если embed доступен)
- *   rag_where(symbol, n)          — где определён класс/функция/символ
- *   rag_summary(path)             — сводка по файлу/модулю
- *   rag_stats()                   — статистика индекса
- *   kb_read()                     — содержимое PROJECT_KNOWLEDGE.md
- *   kb_add(fact)                  — дописать факт в PROJECT_KNOWLEDGE.md
+ *   rag_project()          — активный проект + список всех
+ *   rag_search(query,n,semantic,project?)   — гибридный поиск (лексика + BM25 + семантика bge-m3)
+ *   rag_where(symbol,n,project?)            — где определён класс/функция/символ
+ *   rag_summary(path,project?)              — сводка по файлу/модулю
+ *   rag_stats(project?)                     — статистика индекса
+ *   kb_read(project?)                       — PROJECT_KNOWLEDGE.md активного проекта
+ *   kb_add(fact,project?)                   — дописать факт в базу знаний
  */
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
@@ -16,17 +23,99 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, ".."); // корень репо opencode-env
-const DB_PATH = process.env.RAG_DB ?? path.join(ROOT, "rag", "index.db");
-const KB_PATH = process.env.RAG_KB ?? path.join(ROOT, "rag", "PROJECT_KNOWLEDGE.md");
-const PROJECT_ROOT = process.env.RAG_ROOT ?? ".";
+const PROJECTS_DIR = process.env.RAG_PROJECTS_DIR ?? path.join(ROOT, "rag", "projects");
 const EMBED_URL = process.env.RAG_EMBED_URL ?? "http://127.0.0.1:8095/v1/embeddings";
-const EMBED_DIM = 1024; // bge-m3 dense
 
-let db = null;
-let chunks = [];      // {id,path,lang,start_line,end_line,text,tokens[],vec<Float32Array|null>}
-let df = new Map();   // token -> документная частота (для BM25)
-let N = 0;
+// ---------- список проектов ----------
+function scanProjects() {
+  const out = new Map();
+  let names = [];
+  try { names = fs.readdirSync(PROJECTS_DIR); } catch { return out; }
+  for (const name of names) {
+    const dir = path.join(PROJECTS_DIR, name);
+    const pp = path.join(dir, "project.path");
+    if (!fs.existsSync(pp)) continue;
+    const src = fs.readFileSync(pp, "utf8").trim();
+    out.set(name, {
+      name,
+      src,
+      dbPath: path.join(dir, "index.db"),
+      kbPath: path.join(dir, "PROJECT_KNOWLEDGE.md"),
+    });
+  }
+  return out;
+}
 
+// активный проект по cwd (самый длинный префикс), либо RAG_PROJECT из env
+function detectActive(cwd) {
+  const projects = scanProjects();
+  const envPick = process.env.RAG_PROJECT;
+  if (envPick && projects.has(envPick)) return envPick;
+  let real;
+  try { real = fs.realpathSync(cwd); } catch { real = cwd; }
+  let best = null, bestLen = -1;
+  for (const [name, p] of projects) {
+    let src;
+    try { src = fs.realpathSync(p.src); } catch { src = p.src; }
+    if (real === src || real.startsWith(src + path.sep)) {
+      if (src.length > bestLen) { bestLen = src.length; best = name; }
+    }
+  }
+  return best;
+}
+
+// ---------- загрузка индекса проекта в память (кэш) ----------
+const cache = new Map();
+function load(name) {
+  if (cache.has(name)) return cache.get(name);
+  const projects = scanProjects();
+  const p = projects.get(name);
+  if (!p) throw new Error(`Нет проекта «${name}». Проиндексируй: node mcp/build-index.mjs --project /path/to/project`);
+  if (!fs.existsSync(p.dbPath)) throw new Error(`Индекс «${name}» не создан — запустите: node mcp/build-index.mjs --project ${p.src}`);
+  const db = new DatabaseSync(p.dbPath);
+  const rows = db.prepare("SELECT id,path,lang,start_line,end_line,text,tokens FROM chunks").all();
+  const idx = {
+    name,
+    src: p.src,
+    kbPath: p.kbPath,
+    chunks: rows.map((r) => ({
+      id: r.id, path: r.path, lang: r.lang,
+      start_line: r.start_line, end_line: r.end_line, text: r.text,
+      tokens: (r.tokens || "").split(" ").filter(Boolean),
+      vec: null,
+    })),
+    df: new Map(),
+  };
+  idx.N = idx.chunks.length;
+  try {
+    const vrows = db.prepare("SELECT id,vec FROM vecs").all();
+    const vmap = new Map(vrows.map((v) => [v.id, new Float32Array(v.vec.buffer.slice(v.vec.byteOffset, v.vec.byteOffset + v.vec.byteLength))]));
+    for (const c of idx.chunks) c.vec = vmap.get(c.id) || null;
+  } catch { /* vecs ещё нет — лексика */ }
+  for (const c of idx.chunks) {
+    const seen = new Set(c.tokens);
+    for (const t of seen) idx.df.set(t, (idx.df.get(t) || 0) + 1);
+  }
+  cache.set(name, idx);
+  return idx;
+}
+
+// выбрать проект: явный параметр, иначе активный по cwd
+function chooseProject(asked) {
+  if (asked && typeof asked === "string" && asked.trim()) return asked.trim();
+  const active = detectActive(process.cwd());
+  if (!active) {
+    const names = [...scanProjects().keys()];
+    throw new Error(
+      "Не удалось определить проект по рабочей директории.\n" +
+      (names.length ? `Доступные индексы: ${names.join(", ")}\n` : "Индексов нет. Проиндексируй: node mcp/build-index.mjs --project /path/to/project\n") +
+      "Указать явно: передай project в инструменте или задай RAG_PROJECT=<имя>."
+    );
+  }
+  return active;
+}
+
+// ---------- поисковая логика ----------
 function tokenize(text) {
   const t = text
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -40,35 +129,8 @@ function uniqTokens(text) {
   return [...seen];
 }
 
-function load() {
-  if (db) return;
-  try {
-    db = new DatabaseSync(DB_PATH);
-    const rows = db.prepare("SELECT id,path,lang,start_line,end_line,text,tokens FROM chunks").all();
-    chunks = rows.map((r) => ({
-      id: r.id, path: r.path, lang: r.lang,
-      start_line: r.start_line, end_line: r.end_line, text: r.text,
-      tokens: (r.tokens || "").split(" ").filter(Boolean),
-      vec: null,
-    }));
-    N = chunks.length;
-    try {
-      const vrows = db.prepare("SELECT id,vec FROM vecs").all();
-      const vmap = new Map(vrows.map((v) => [v.id, new Float32Array(v.vec.buffer.slice(v.vec.byteOffset, v.vec.byteOffset + v.vec.byteLength))]));
-      for (const c of chunks) c.vec = vmap.get(c.id) || null;
-    } catch { /* vecs ещё нет — лексика */ }
-    // документные частоты
-    df = new Map();
-    for (const c of chunks) {
-      const seen = new Set(c.tokens);
-      for (const t of seen) df.set(t, (df.get(t) || 0) + 1);
-    }
-  } catch (e) {
-    throw new Error(`DB not ready (${DB_PATH}): ${e.message}. Запустите: node build-index.mjs`);
-  }
-}
-
-function bm25(queryTokens) {
+function bm25(idx, queryTokens) {
+  const { chunks, df, N } = idx;
   const k1 = 1.5, b = 0.75;
   const avgdl = N > 0 ? chunks.reduce((s, c) => s + c.tokens.length, 0) / N : 1;
   const scores = new Float32Array(N);
@@ -86,19 +148,17 @@ function bm25(queryTokens) {
   return scores;
 }
 
-function scoreQuery(query) {
+function scoreQuery(idx, query) {
   const qTokens = uniqTokens(query);
-  const bm = bm25(qTokens);
+  const bm = bm25(idx, qTokens);
   const qSet = new Set(qTokens);
   const out = [];
-  for (let i = 0; i < N; i++) {
-    const c = chunks[i];
+  for (let i = 0; i < idx.N; i++) {
+    const c = idx.chunks[i];
     let score = bm[i];
-    // точное совпадение символов — сильный буст
     const toks = new Set(c.tokens);
     const exact = qTokens.filter((t) => toks.has(t)).length;
     if (exact >= 2) score *= 1 + 0.8 * exact;
-    // совпадение в имени файла
     const fname = tokenize(path.basename(c.path));
     const fnHit = fname.filter((t) => qSet.has(t)).length;
     if (fnHit > 0) score *= 1 + 0.5 * fnHit;
@@ -131,7 +191,7 @@ function cosine(a, b) {
   return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9);
 }
 
-function snippet(chunk, queryTokens) {
+function snippet(idx, chunk, queryTokens) {
   const lines = chunk.text.split("\n");
   let best = 0, bestHits = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -142,10 +202,11 @@ function snippet(chunk, queryTokens) {
   return lines.slice(from, to).join("\n");
 }
 
-async function search(query, n = 5, withSemantic = true) {
-  load();
-  if (!N) return "Индекс пуст — запустите node build-index.mjs";
-  let ranked = scoreQuery(query);
+// ---------- инструменты ----------
+async function search(idx, query, n = 5, withSemantic = true) {
+  const { chunks, N } = idx;
+  if (!N) return "Индекс пуст — запустите: node mcp/build-index.mjs --project <путь>";
+  let ranked = scoreQuery(idx, query);
   ranked.sort((a, b) => b.score - a.score);
   let top = ranked.slice(0, Math.max(20, n * 4));
   if (withSemantic) {
@@ -166,17 +227,15 @@ async function search(query, n = 5, withSemantic = true) {
   const out = [];
   for (const r of top.slice(0, n)) {
     const c = chunks[r.idx];
-    out.push(`[${c.path}:${c.start_line}-${c.end_line}]${r.semantic ? ` (sem=${r.semantic.toFixed(2)})` : ""}\n\`\`\`${c.lang}\n${snippet(c, qTokens)}\n\`\`\``);
+    out.push(`[${c.path}:${c.start_line}-${c.end_line}]${r.semantic ? ` (sem=${r.semantic.toFixed(2)})` : ""}\n\`\`\`${c.lang}\n${snippet(idx, c, qTokens)}\n\`\`\``);
   }
   return out.join("\n---\n");
 }
 
-async function where(symbol, n = 5) {
-  load();
+function where(idx, symbol, n = 5) {
   const toks = tokenize(symbol).map((t) => t.replace(/s$/, ""));
   const hits = [];
-  for (let i = 0; i < N; i++) {
-    const c = chunks[i];
+  for (const c of idx.chunks) {
     const ct = new Set(c.tokens);
     if (toks.every((t) => ct.has(t))) hits.push(c);
   }
@@ -184,39 +243,49 @@ async function where(symbol, n = 5) {
   return hits.slice(0, n).map((c) => `- ${c.path}:${c.start_line}-${c.end_line}`).join("\n") || `Символ "${symbol}" не найден в индексе.`;
 }
 
-function summary(targetPath) {
-  load();
-  const rel = targetPath.replace(new RegExp("^" + PROJECT_ROOT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/"), "");
-  const hits = chunks.filter((c) => c.path.includes(rel));
+function summary(idx, targetPath) {
+  const rel = targetPath.replace(new RegExp("^" + idx.src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/"), "");
+  const hits = idx.chunks.filter((c) => c.path.includes(rel));
   if (!hits.length) return `Нет чанков по пути ${targetPath}.`;
   const total = hits.reduce((s, c) => s + (c.end_line - c.start_line + 1), 0);
   const head = hits[0].text.split("\n").slice(0, 25).join("\n");
   return `Файл: ${hits[0].path}\nСтрок в индексе: ${total} (${hits.length} чанков)\nНачало файла:\n\`\`\`${hits[0].lang}\n${head}\n\`\`\``;
 }
 
-function stats() {
-  load();
+function stats(idx) {
   const langs = {};
-  for (const c of chunks) langs[c.lang] = (langs[c.lang] || 0) + 1;
-  const hasVec = chunks.filter((c) => c.vec).length;
-  return `Индекс RAG: ${N} чанков (${Object.keys(langs).length} языков)\nЯзыки: ${Object.entries(langs).map(([k, v]) => `${k}=${v}`).join(", ")}\nЭмбеддинги: ${hasVec}/${N} чанков\nБаза знаний: ${fs.existsSync(KB_PATH) ? KB_PATH : "нет"}`;
+  for (const c of idx.chunks) langs[c.lang] = (langs[c.lang] || 0) + 1;
+  const hasVec = idx.chunks.filter((c) => c.vec).length;
+  return `Проект: ${idx.name} (${idx.src})\nИндекс: ${idx.N} чанков (${Object.keys(langs).length} языков)\nЯзыки: ${Object.entries(langs).map(([k, v]) => `${k}=${v}`).join(", ")}\nЭмбеддинги: ${hasVec}/${idx.N} чанков\nБаза знаний: ${fs.existsSync(idx.kbPath) ? idx.kbPath : "нет"}`;
 }
 
-function kbRead() {
-  load();
-  if (!fs.existsSync(KB_PATH)) return "База знаний ещё не создана — запустите build-index.mjs";
-  const t = fs.readFileSync(KB_PATH, "utf8");
+function projectInfo() {
+  const projects = scanProjects();
+  const active = detectActive(process.cwd());
+  const lines = [`Рабочая директория: ${process.cwd()}`];
+  lines.push(active ? `Активный проект: ${active} (${projects.get(active)?.src})` : "Активный проект: НЕ ОПРЕДЕЛЁН (нет индекса, покрывающего cwd)");
+  if (projects.size) {
+    lines.push("Доступные индексы:");
+    for (const [name, p] of projects) lines.push(`  - ${name}  (${p.src})`);
+  } else {
+    lines.push("Индексов нет. Проиндексируй: node mcp/build-index.mjs --project /path/to/project");
+  }
+  return lines.join("\n");
+}
+
+function kbRead(idx) {
+  if (!fs.existsSync(idx.kbPath)) return "База знаний ещё не создана — запустите build-index.mjs";
+  const t = fs.readFileSync(idx.kbPath, "utf8");
   return t.length > 12000 ? t.slice(0, 12000) + "\n...[обрезано, всего " + t.length + " симв]" : t;
 }
 
-function kbAdd(fact) {
-  load();
-  fs.mkdirSync(path.dirname(KB_PATH), { recursive: true });
+function kbAdd(idx, fact) {
+  fs.mkdirSync(path.dirname(idx.kbPath), { recursive: true });
   const stamp = new Date().toISOString().replace("T", " ").slice(0, 16);
   const line = `- [${stamp}] ${String(fact).trim()}`;
-  if (fs.existsSync(KB_PATH)) fs.appendFileSync(KB_PATH, line + "\n");
-  else fs.writeFileSync(KB_PATH, `# PROJECT_KNOWLEDGE.md\n\n## Факты и решения\n${line}\n`);
-  return `Факт добавлен в базу знаний (${KB_PATH}):\n${line}`;
+  if (fs.existsSync(idx.kbPath)) fs.appendFileSync(idx.kbPath, line + "\n");
+  else fs.writeFileSync(idx.kbPath, `# PROJECT_KNOWLEDGE.md\n\n## Факты и решения\n${line}\n`);
+  return `Факт добавлен в базу знаний (${idx.name}):\n${line}`;
 }
 
 // ---------- MCP (JSON-RPC over stdio) ----------
@@ -226,15 +295,16 @@ function jsonrpcError(id, code, message) { return JSON.stringify({ jsonrpc: "2.0
 const tools = [
   {
     name: "rag_search",
-    description: "Семантико-лексический поиск по коду проекта. " +
-      "Запрос — фраза как к пользователю («биллинг», «как делается рассылка в Telegram»). Возвращает top-N " +
-      "мест с путём, строками и сниппетом кода. Используй ПЕРВЫМ перед чтением крупных файлов.",
+    description: "Семантико-лексический поиск по коду проекта (активного — по рабочей директории, либо указанному project). " +
+      "Запрос — фраза как к пользователю («биллинг», «как делается рассылка в Telegram»). Возвращает top-N мест " +
+      "с путём, строками и сниппетом. Используй ПЕРВЫМ перед чтением крупных файлов.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Что ищем (рус/англ/идентификаторы)" },
         n: { type: "integer", description: "Сколько результатов, default 5" },
         semantic: { type: "boolean", description: "Включать семантический слой (нужен bge-m3 на :8095), default true" },
+        project: { type: "string", description: "Имя проекта (см. rag_project). По умолчанию — активный по cwd" },
       },
       required: ["query"],
     },
@@ -247,6 +317,7 @@ const tools = [
       properties: {
         symbol: { type: "string", description: "Имя символа (camelCase/snake_case)" },
         n: { type: "integer", description: "Сколько результатов, default 5" },
+        project: { type: "string", description: "Имя проекта (см. rag_project)" },
       },
       required: ["symbol"],
     },
@@ -256,28 +327,44 @@ const tools = [
     description: "Сводка по конкретному файлу/модулю: первые 25 строк + статистика. Путь — относительный или абсолютный.",
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string", description: "Путь к файлу" } },
+      properties: {
+        path: { type: "string", description: "Путь к файлу" },
+        project: { type: "string", description: "Имя проекта (см. rag_project)" },
+      },
       required: ["path"],
     },
   },
   {
     name: "rag_stats",
-    description: "Статистика индекса RAG: число чанков, языки, готовность эмбеддингов, путь базы знаний.",
+    description: "Статистика индекса проекта: чанки, языки, эмбеддинги, путь базы знаний.",
+    inputSchema: {
+      type: "object",
+      properties: { project: { type: "string", description: "Имя проекта (см. rag_project)" } },
+    },
+  },
+  {
+    name: "rag_project",
+    description: "Какой проект активен (по рабочей директории) и какие проекты проиндексированы.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "kb_read",
     description: "Прочитать накопительную базу знаний проекта (PROJECT_KNOWLEDGE.md): архитектурные факты, решения, ссылки. " +
-      "Вызывай при старте работы и перед незнакомыми задачами, чтобы не перечитывать проект заново.",
-    inputSchema: { type: "object", properties: {} },
+      "Вызывай при старте работы и перед незнакомыми задачами.",
+    inputSchema: {
+      type: "object",
+      properties: { project: { type: "string", description: "Имя проекта (см. rag_project)" } },
+    },
   },
   {
     name: "kb_add",
-    description: "Добавить факт в базу знаний проекта (PROJECT_KNOWLEDGE.md). Используй после изучения крупного модуля, " +
-      "важного решения, найденной закономерности — чтобы следующая сессия не искала заново.",
+    description: "Добавить факт в базу знаний проекта (PROJECT_KNOWLEDGE.md): где что лежит, как устроено, конвенции.",
     inputSchema: {
       type: "object",
-      properties: { fact: { type: "string", description: "Текст факта: где что лежит, как устроено, какие конвенции" } },
+      properties: {
+        fact: { type: "string", description: "Текст факта" },
+        project: { type: "string", description: "Имя проекта (см. rag_project)" },
+      },
       required: ["fact"],
     },
   },
@@ -287,7 +374,7 @@ async function handleRequest(msg) {
   const { id, method, params } = msg;
   switch (method) {
     case "initialize":
-      return jsonrpc(id, { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "rag-server", version: "1.0.0" } });
+      return jsonrpc(id, { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "rag-server", version: "2.0.0" } });
     case "notifications/initialized":
       return null;
     case "tools/list":
@@ -297,13 +384,29 @@ async function handleRequest(msg) {
       try {
         const a = args || {};
         let text;
-        if (name === "rag_search") text = await search(String(a.query || ""), Math.min(20, a.n || 5), a.semantic !== false);
-        else if (name === "rag_where") text = await where(String(a.symbol || ""), a.n || 5);
-        else if (name === "rag_summary") text = summary(String(a.path || ""));
-        else if (name === "rag_stats") text = stats();
-        else if (name === "kb_read") text = kbRead();
-        else if (name === "kb_add") text = kbAdd(String(a.fact || ""));
-        else return jsonrpcError(id, -32602, `Unknown tool: ${name}`);
+        if (name === "rag_project") {
+          text = projectInfo();
+        } else if (name === "rag_search") {
+          const idx = load(chooseProject(a.project));
+          text = await search(idx, String(a.query || ""), Math.min(20, a.n || 5), a.semantic !== false);
+        } else if (name === "rag_where") {
+          const idx = load(chooseProject(a.project));
+          text = where(idx, String(a.symbol || ""), a.n || 5);
+        } else if (name === "rag_summary") {
+          const idx = load(chooseProject(a.project));
+          text = summary(idx, String(a.path || ""));
+        } else if (name === "rag_stats") {
+          const idx = load(chooseProject(a.project));
+          text = stats(idx);
+        } else if (name === "kb_read") {
+          const idx = load(chooseProject(a.project));
+          text = kbRead(idx);
+        } else if (name === "kb_add") {
+          const idx = load(chooseProject(a.project));
+          text = kbAdd(idx, String(a.fact || ""));
+        } else {
+          return jsonrpcError(id, -32602, `Unknown tool: ${name}`);
+        }
         return jsonrpc(id, { content: [{ type: "text", text }] });
       } catch (e) {
         return jsonrpc(id, { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true });

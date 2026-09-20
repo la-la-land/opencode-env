@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # opencode-env / start.sh — стек-менеджер (llama.cpp + Qdrant)
 #   ./start.sh all          — поднять всё (embed :8095 + main :1234 + qdrant :6333)
+#   ./start.sh infra        — только инфраструктура (embed + qdrant, без LLM) — сценарий «без локальной LLM»
 #   ./start.sh embed|main|qdrant
 #   ./start.sh stop         — остановить llama.cpp и qdrant
 #   ./start.sh health       — статус всех сервисов
 # Локальная модель: Gemma 4 12B (256K, целиком в VRAM при 16 ГБ).
-# Без GPU (ноутбук): не запускай main — используй удалённый провайдер,
-# embed/qdrant для RAG работают и на CPU.
+# Без локальной LLM (ноутбук/сервер без GPU): ./start.sh infra —
+# embed/qdrant для RAG работают на CPU, а модель подключается удалённая (stack.config, /models).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -63,8 +64,12 @@ start_main() {
   if curl -s --max-time 2 http://127.0.0.1:1234/health >/dev/null 2>&1; then
     echo "основной сервер уже работает (:1234)"; return
   fi
-  [ -x "$BIN" ] || { echo "нет $BIN — запусти ./setup.sh"; exit 1; }
-  [ -f "$MAIN_MODEL" ] || { echo "нет модели $MAIN_MODEL — запусти ./setup.sh или используй удалённую"; exit 1; }
+  [ -x "$BIN" ] || { echo "нет $BIN — запусти ./setup.sh"; return 1; }
+  if [ ! -f "$MAIN_MODEL" ]; then
+    echo "нет локальной модели — сценарий «без локальной LLM»: используй удалённую (stack.config REMOTE_*, выбор в /models)."
+    echo "Для RAG-инфраструктуры достаточно: ./start.sh infra"
+    return 0
+  fi
   echo "старт Gemma 4 12B (:1234, ctx 256K, alias $ALIAS)..."
   setsid "$BIN" \
     -m "$MAIN_MODEL" -c 262144 \
@@ -88,6 +93,8 @@ health() {
     set -- $s
     if curl -sf --max-time 2 "http://127.0.0.1:$1/health" >/dev/null 2>&1; then
       echo "  [ok]   :$1 ($2)"
+    elif [ "$1" = "1234" ] && [ ! -f "$MAIN_MODEL" ]; then
+      echo "  [ok]   :1234 (LLM — удалённая, локальной модели нет)"
     else
       echo "  [нет]  :$1 ($2)"
     fi
@@ -98,11 +105,12 @@ case "${1:-all}" in
   embed)  start_embed ;;
   main)   start_main ;;
   qdrant) start_qdrant ;;
+  infra)  start_embed; start_qdrant ;;
   all)    start_embed; start_qdrant; start_main ;;
   stop)
     pkill -f "llama-server" 2>/dev/null || true
     pkill -f "qdrant --config-path" 2>/dev/null || true
     echo "llama-server + qdrant остановлены (honcho в docker не трогаем)" ;;
   health) health ;;
-  *) echo "usage: $0 [all|embed|main|qdrant|stop|health]"; exit 1 ;;
+  *) echo "usage: $0 [all|infra|embed|main|qdrant|stop|health]"; exit 1 ;;
 esac

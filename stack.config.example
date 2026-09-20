@@ -3,9 +3,18 @@
 # Меняй значения и запусти: ./configure.sh (или make config).
 # Всё остальное (opencode.json, honcho/.env, env vision-MCP)
 # перегенерируется автоматически.
+#
+# Два сценария:
+#   1) ЛОКАЛЬНАЯ LLM (ПК с GPU): OPENCODE_MODEL=local/coder,
+#      BACKEND=local при установке (make setup).
+#   2) БЕЗ ЛОКАЛЬНОЙ LLM (ноутбук, сервер без GPU, экономия):
+#      BACKEND=remote при установке (make setup BACKEND=remote),
+#      локальная Gemma не ставится; RAG/браузер/honcho работают,
+#      модель для агентов берётся из REMOTE_* ниже или выбирается
+#      в opencode прямо в сессии (/models). Запуск: make infra.
 # ============================================================
 
-# --- основная модель opencode ---
+# --- основная модель opencode (выбор по умолчанию при старте сессии) ---
 #   local/coder  — локальная Gemma (llama.cpp :1234)
 #   remote/main  — удалённая (нужны REMOTE_* ниже)
 OPENCODE_MODEL=local/coder
@@ -36,8 +45,10 @@ HONCHO_LLM_MODEL=local-coder
 CHROME_PATH=/usr/bin/google-chrome
 
 # --- модели суб-агентов ---
-# Пусто = наследовать модель сессии (подстраивается автоматически).
+# Пусто (по умолчанию) = наследуют модель текущей сессии — модель берётся
+# из выбранной в opencode (/models). Задай конкретную, чтобы закрепить
+# за агентом свою модель (например AGENT_MODEL_EXPLORE=remote/main).
 AGENT_MODEL_GENERAL=
 AGENT_MODEL_EXPLORE=
-AGENT_MODEL_IMPLEMENTER=local/coder
-AGENT_MODEL_REVIEWER=local/coder
+AGENT_MODEL_IMPLEMENTER=
+AGENT_MODEL_REVIEWER=
