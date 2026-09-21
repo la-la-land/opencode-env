@@ -130,6 +130,12 @@ CHROME_PATH=/usr/bin/google-chrome    # для chrome-devtools MCP
 make up              # configure.sh → start.sh all → honcho up (всё, что уже установлено)
 ```
 
+`configure.sh` также ставит глобальный плагин `plugins/honcho-sync.ts` в
+`~/.config/opencode/plugins/`: он автоматически зеркалит переписку каждой сессии
+в honcho (workspace `project-<имя>`) и инжектит блок `## Honcho Memory` с
+последними сообщениями проекта в system prompt новых сессий. После обновления
+плагина перезапусти opencode, чтобы он загрузился.
+
 По шагам (эквивалент):
 
 ```sh
