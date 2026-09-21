@@ -5,7 +5,10 @@
 - `chrome-devtools` — Google Chrome DevTools Protocol (chrome-devtools-mcp)
 - `playwright` — Playwright MCP (@playwright/mcp)
 
-Оба в headless + isolated по умолчанию (без дисплея, без shared state).
+Оба в headless + isolated по умолчанию (без дисплея, без shared state). Оба **self-contained —
+не зависят от привязки десктопного браузера к сессии** (в отличие от встроенного
+`tools.browser.*` — тот требует desktop-привязки и даёт `[browser.disconnected]`
+в сессиях без неё). Используй ТОЛЬКО `chrome-devtools`/`playwright` MCP.
 
 ---
 
@@ -33,10 +36,11 @@
 
 ## 2. Какие действия брать
 
-- `browser.tabs.open` / `navigate` — открытие URL
-- `page.content` / `page.text` / `page.screenshot` — что видит пользователь
+- `chrome-devtools.new_page` / `navigate_page` — открытие URL (свой Chrome)
+- `playwright.new_page` / `browser_navigate` — альтернатива
+- `take_snapshot` / `page.content` / `page.screenshot` — что видит пользователь
 - `page.query` / `page.click` — взаимодействие
-- `page.console` — ошибки JS (всегда проверяй после загрузки страницы)
+- `page.console` / `console` — ошибки JS (всегда проверяй после загрузки страницы)
 - `network` HAR / requests — что реально уходит на сервер
 
 ---
