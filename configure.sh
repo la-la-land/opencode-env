@@ -203,6 +203,28 @@ if [ -f honcho/.env.template ]; then
   echo "[ok] honcho/.env перегенерирован (LLM: $HONCHO_B / $HONCHO_M)"
 fi
 
+# ---------- установка глобального плагина honcho-sync (авто-зеркало в honcho) ----------
+# Источник — репо; ставится в ~/.config/opencode/plugins/ (автодискавери глобальных плагинов).
+myplugins=("honcho-sync.ts")
+mkdir -p "$CONFIG_DIR/plugins"
+for pl in "${myplugins[@]}"; do
+  src="$ROOT/plugins/$pl"
+  if [ -f "$src" ]; then
+    if [ -f "$CONFIG_DIR/plugins/$pl" ] && ! diff -q "$src" "$CONFIG_DIR/plugins/$pl" >/dev/null 2>&1; then
+      cp "$src" "$CONFIG_DIR/plugins/$pl"
+      echo "[ok] плагин $pl обновлён в $CONFIG_DIR/plugins/"
+    elif [ ! -f "$CONFIG_DIR/plugins/$pl" ]; then
+      cp "$src" "$CONFIG_DIR/plugins/$pl"
+      echo "[ok] плагин $pl установлен в $CONFIG_DIR/plugins/"
+    else
+      echo "[ok] плагин $pl уже установлен (актуальная версия)"
+    fi
+  fi
+done
+if [ -f "$CONFIG_DIR/plugins/honcho-sync.ts" ]; then
+  echo "  honcho-авто-зеркало: $CONFIG_DIR/plugins/honcho-sync.ts (перезапусти opencode, чтобы плагин загрузился)"
+fi
+
 echo "--- итог ---"
 echo "  локальная LLM:   $LOCAL_LLM_BASE_URL ($LOCAL_LLM_MODEL)"
 [ -n "$VISION_MODEL" ] && echo "  vision (MCP):    $VISION_MODEL (@ $VISION_BASE_URL)" || echo "  vision (MCP):    выключен (configure.sh set-vision ...)"
