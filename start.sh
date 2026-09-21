@@ -35,7 +35,7 @@ start_embed() {
   [ -x "$BIN" ] || { echo "нет $BIN — запусти ./setup.sh"; exit 1; }
   echo "старт embed bge-m3 (:8095)..."
   setsid "$BIN" -m "$EMBED" --embedding --host 127.0.0.1 --port 8095 \
-    -c 8192 -b 2048 -ub 2048 --threads "$(nproc)" \
+    -c 8192 -b 8192 -ub 8192 --threads "$(nproc)" \
     > rag/embed-server.log 2>&1 < /dev/null &
   disown
   for i in $(seq 1 20); do

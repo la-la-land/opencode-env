@@ -27,6 +27,10 @@ const EMBED_URL = process.env.RAG_EMBED_URL ?? "http://127.0.0.1:8095/v1/embeddi
 const QDRANT_URL = (process.env.QDRANT_URL ?? "http://127.0.0.1:6333").replace(/\/+$/, "");
 const DEFAULT_DIM = parseInt(process.env.RAG_EMBED_DIM || "1024", 10);
 const BATCH = 64;
+// bge-m3 запускается с физическим батчем 2048-8192 токенов: слишком длинный
+// единичный вход валит весь запрос (embed HTTP 500). Режем символы, чтобы
+// вход гарантированно влезал в лимит токенов.
+const MAX_CHARS = parseInt(process.env.RAG_EMBED_MAX_CHARS || "2000", 10);
 
 const args = process.argv.slice(2);
 let only = null, reset = false;
@@ -110,7 +114,7 @@ async function embedProject(name) {
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
     try {
-      const vecs = await embedBatch(batch.map((r) => r.text ? r.text.slice(0, 4000) : ""));
+      const vecs = await embedBatch(batch.map((r) => r.text ? r.text.slice(0, MAX_CHARS) : ""));
       const points = batch.map((r, k) => ({ id: r.id, path: r.path, start_line: r.start_line, end_line: r.end_line, lang: r.lang, vector: vecs[k] }));
       await upsertPoints(name, points);
       done += batch.length;
