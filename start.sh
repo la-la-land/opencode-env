@@ -26,7 +26,9 @@ BIN=./llama.cpp-bin/llama-server
 EMBED=models/bge-m3-q8_0.gguf
 MAIN_MODEL=models/gemma-4-12b-it-Q4_K_M.gguf
 LOG=rag/main-server.log
-ALIAS=local-coder
+ALIAS="${ALIAS:-local-coder}"
+# Обрати внимание: --host 0.0.0.0 — llama должна быть видна из docker-контейнеров
+# honcho (через host.docker.internal, см. honcho/docker-compose.override.yml).
 
 start_embed() {
   if curl -s --max-time 2 http://127.0.0.1:8095/health >/dev/null 2>&1; then
@@ -73,7 +75,7 @@ start_main() {
   echo "старт Gemma 4 12B (:1234, ctx 256K, alias $ALIAS)..."
   setsid "$BIN" \
     -m "$MAIN_MODEL" -c 262144 \
-    --host 127.0.0.1 --port 1234 --alias "$ALIAS" \
+    --host 0.0.0.0 --port 1234 --alias "$ALIAS" \
     --flash-attn on \
     --parallel 1 --gpu-layers "${NGL:-99}" \
     --threads 24 --threads-batch 24 --no-webui \

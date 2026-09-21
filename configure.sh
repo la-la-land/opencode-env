@@ -212,4 +212,7 @@ CFG_PATH="${TARGET_DIR:+$TARGET_DIR/opencode.json}"
 [ -z "$TARGET_DIR" ] && CFG_PATH="$CONFIG_DIR/opencode.json"
 echo "Проверь: opencode → /models (модель сессии), /providers (удалённые — нативно), mcp список."
 echo "Конфиг: $( [ "${1:-}" = "--print" ] && echo stdout || echo "$CFG_PATH" )"
-[ -n "$CFG_PATH" ] && [ "${1:-}" != "--print" ] && [ ! -f "$CFG_PATH" ] && echo "  (opencode.json записан в $CFG_PATH — opencode подхватит его автоматически)"
+if [ -n "$CFG_PATH" ] && [ "${1:-}" != "--print" ] && [ ! -f "$CFG_PATH" ]; then
+  echo "  (opencode.json записан в $CFG_PATH — opencode подхватит его автоматически)"
+fi
+exit 0

@@ -13,7 +13,7 @@ WITH_HONCHO ?= 0
 BIN_DIR   ?= $(HOME)/.local/bin
 SKILLS_DIR ?= $(HOME)/.config/opencode/skills
 
-.PHONY: setup models model-gemma config set-vision install-bin install-skills start infra stop health honcho clean help
+.PHONY: setup models model-gemma config set-vision install-bin install-skills start infra stop health honcho up down clean help
 
 help: ## Показать справку
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
@@ -64,8 +64,20 @@ stop: ## Остановить стек
 health: ## Статус всех сервисов
 	./start.sh health
 
-honcho: ## Развернуть honcho (docker) — см. honcho/README.md
+honcho: ## Развернуть honcho (docker, локальная память на Gemma :1234)
+	./configure.sh   ## обновить honcho/.env (адреса моделей) перед деплоем
 	./honcho/setup-honcho.sh
+
+up: ## Поднять ВСЁ установленное одной командой (конфиги + стек + honcho). Идемпотентно: после ребута просто `make up`
+	./configure.sh
+	./start.sh all
+	./honcho/setup-honcho.sh
+
+down: ## Остановить стек и honcho (volumes сохраняются — память/данные целы)
+	./start.sh stop
+	@if [ -d "$(HOME)/honcho" ] && docker compose -f "$(HOME)/honcho/docker-compose.yml" -f "$(HOME)/honcho/docker-compose.override.yml" ps >/dev/null 2>&1; then \
+	  cd "$(HOME)/honcho" && docker compose down; \
+	fi
 
 clean: ## Удалить собранное/скачанное (модели остаются)
 	rm -rf llama.cpp-bin qdrant/qdrant qdrant/storage *.log

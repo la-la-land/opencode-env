@@ -3,7 +3,7 @@
 #   1) клонирует официальный plastic-labs/honcho (если нужно)
 #   2) кладёт .env (из шаблона — модели на локальную Gemma :1234)
 #   3) кладёт docker-compose.override.yml (доступ контейнеров к llama.cpp на хосте)
-#   4) docker compose up -d --build
+#   4) docker compose up -d (образы соберутся при первом запуске, дальше — мгновенно)
 # Требует: docker (compose v2). Переменные: HONCHO_SRC (по умолч. ~/honcho), HONCHO_REPO.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -28,8 +28,8 @@ fi
 cp docker-compose.override.yml "$HONCHO_SRC/docker-compose.override.yml"
 
 cd "$HONCHO_SRC"
-echo "собираю и поднимаю контейнеры (первые минуты — сборка)..."
-docker compose up -d --build
+echo "поднимаю контейнеры (при первом запуске — сборка образов; дальше — моментом)..."
+docker compose up -d
 
 echo "ждём API на :8000..."
 for i in $(seq 1 60); do

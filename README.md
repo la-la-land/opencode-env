@@ -123,12 +123,25 @@ CHROME_PATH=/usr/bin/google-chrome    # для chrome-devtools MCP
 
 ## Запуск/остановка стека
 
+**Одна команда поднимает всё установленное** (конфиги opencode + llama/embed/qdrant
++ honcho), идемпотентно — после ребута достаточно:
+
+```sh
+make up              # configure.sh → start.sh all → honcho up (всё, что уже установлено)
+```
+
+По шагам (эквивалент):
+
 ```sh
 make infra           # ./start.sh infra — embed :8095 + qdrant :6333 (без LLM)
 ./start.sh all       # + main :1234 (только если установлена Gemma)
+make honcho          # развернуть honcho (docker, локальная память)
 ./start.sh health    # статус: 1234 LLM, 8095 embed, 6333 qdrant, 8000 honcho
-./start.sh stop      # остановить llama.cpp и qdrant (honcho — docker, не трогаем)
+make down            # остановить стек + honcho (volumes сохраняются)
 ```
+
+Важно: llama в `./start.sh` слушает **0.0.0.0:1234** (не 127.0.0.1) — иначе
+honcho в docker не достанет её через `host.docker.internal`.
 
 Полезное в `start.sh`:
 
@@ -218,9 +231,19 @@ opencode ищет по своему индексу. Переключение в�
 RAG-индексов, либо ближайший git-репозиторий, либо имя текущей папки).
 
 ```sh
-make honcho            # ./honcho/setup-honcho.sh: clone plastic-labs/honcho + docker compose up
+make up              # поднимет и honcho (в составе make up) — или отдельно:
+make honcho          # ./honcho/setup-honcho.sh: clone plastic-labs/honcho + docker compose up
 curl http://127.0.0.1:8000/health   # проверка
 ```
+
+Характеристики поведения (проверено на локальной Gemma):
+
+- Работа deriver (вывод памяти из сообщений) — **батчами**: диалог обрабатывается,
+  когда накопленные сообщения ≥512 токенов ИЛИ прошло 30 минут (`REPRESENTATION_BATCH_*`
+  в `~/honcho/.env`). Короткие диалоги висят в очереди до 30 мин — это норма.
+- Выводимая память пишется на английском (дефолтные промпты honcho англоязычные).
+- `.env` генерирует `configure.sh`; `VECTOR_STORE_TYPE=pgvector` — значение обязано
+  совпадать с кодом honcho (не `postgres`).
 
 Инструменты (MCP-сервер `honcho`, подключается `configure.sh`):
 
