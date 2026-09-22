@@ -205,7 +205,7 @@ fi
 
 # ---------- установка глобального плагина honcho-sync (авто-зеркало в honcho) ----------
 # Источник — репо; ставится в ~/.config/opencode/plugins/ (автодискавери глобальных плагинов).
-myplugins=("honcho-sync.ts")
+myplugins=("honcho-sync.ts" "rag-sync.ts")
 mkdir -p "$CONFIG_DIR/plugins"
 for pl in "${myplugins[@]}"; do
   src="$ROOT/plugins/$pl"
@@ -223,6 +223,9 @@ for pl in "${myplugins[@]}"; do
 done
 if [ -f "$CONFIG_DIR/plugins/honcho-sync.ts" ]; then
   echo "  honcho-авто-зеркало: $CONFIG_DIR/plugins/honcho-sync.ts (перезапусти opencode, чтобы плагин загрузился)"
+fi
+if [ -f "$CONFIG_DIR/plugins/rag-sync.ts" ]; then
+  echo "  rag-авто: $CONFIG_DIR/plugins/rag-sync.ts (поиск + переиндексация; перезапусти opencode)"
 fi
 
 echo "--- итог ---"

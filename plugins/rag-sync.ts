@@ -15,7 +15,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { 
+
+// Используем абсолютные пути к библиотекам, так как плагин может лежать в разных местах.
+// Эти пути предоставлены как константы в условии задачи.
+import * as ragLib from "/home/leonid/opencode-env/mcp/rag-lib.mjs";
+
+const {
   collectionName,
   scanProjects,
   detectActive,
@@ -37,7 +42,7 @@ import {
   projectInfo,
   kbRead,
   kbAdd
-} from "../../../mcp/rag-lib.mjs";
+} = ragLib;
 
 // Константы окружения
 const RAG_PROJECTS_DIR = process.env.RAG_PROJECTS_DIR ?? 
@@ -47,16 +52,16 @@ const RAG_PROJECTS_DIR = process.env.RAG_PROJECTS_DIR ??
 const contextCache = new Map<string, { ts: number; block: string | null }>();
 
 // Определение проекта сессии
-async function getProject(sessionID: string): Promise<string> {
-  const dir = (await (ctx as any).session?.get({ sessionID }))?.directory;
-  const targetDir = dir || (ctx as any).location?.directory || "/home/leonid/llm_worked";
+async function getProject(ctx: any, sessionID: string): Promise<string> {
+  const dir = (await ctx.session?.get({ sessionID }))?.directory;
+  const targetDir = dir || ctx.location?.directory || "/home/leonid/llm_worked";
   return chooseProject(null); // chooseProject уже делает detectActive(activeProjectDir())
 }
 
 // --- Реализация инструментов ---
 
 async function handleRagIndex(input: any, context: any) {
-  const project = input.project || (await getProject(context.sessionID));
+  const project = input.project || (await getProject(context, context.sessionID));
   // ВАЖНО: используем spawn/exec для вызова build-index.mjs
   // так как он требует прав на запись в файловую систему
   console.log(`[rag-sync] Starting indexing for project: ${project}`);
@@ -81,7 +86,7 @@ export default {
     // --- Авто-переиндексация на idle ---
     const indexingLocks = new Set<string>();
     const triggerIndex = async (sessionID: string) => {
-      const project = await getProject(sessionID);
+      const project = await getProject(ctx, sessionID);
       if (!project || indexingLocks.has(project)) return;
       
       indexingLocks.add(project);
@@ -130,7 +135,7 @@ export default {
           return;
         }
 
-        const project = await getProject(sid);
+        const project = await getProject(ctx, sid);
         if (!project) return;
 
         // Берем первый запрос из истории (если есть) или текущий
@@ -174,7 +179,7 @@ export default {
       registerRagTool("rag_search", "Семантический поиск по проекту", 
         { type: "object", properties: { query: { type: "string" }, project: { type: "string" } }, required: ["query"] },
         async (i: any, c: any) => {
-          const p = i.project || (await getProject(c.sessionID));
+          const p = i.project || (await getProject(c, c.sessionID));
           const idx = load(p);
           return { content: await search(idx, i.query, 5) };
         });
@@ -182,7 +187,7 @@ export default {
       registerRagTool("rag_where", "Где встречается фраза", 
         { type: "object", properties: { phrase: { type: "string" }, project: { type: "string" } }, required: ["phrase"] },
         async (i: any, c: any) => {
-          const p = i.project || (await getProject(c.sessionID));
+          const p = i.project || (await getProject(c, c.sessionID));
           const idx = load(p);
           return { content: await where(idx, i.phrase, 5) };
         });
@@ -194,7 +199,7 @@ export default {
       registerRagTool("rag_stats", "Статистика индекса проекта", 
         { type: "object", properties: { project: { type: "string" } }, required: [] },
         async (i: any, c: any) => {
-          const p = i.project || (await getProject(c.sessionID));
+          const p = i.project || (await getProject(c, c.sessionID));
           const idx = load(p);
           return { content: await stats(idx) };
         });
@@ -202,7 +207,7 @@ export default {
       registerRagTool("rag_project", "Информация о проекте и активных индексах", 
         { type: "object", properties: { project: { type: "string" } }, required: [] },
         async (i: any, c: any) => {
-          const p = i.project || (await getProject(c.sessionID));
+          const p = i.project || (await getProject(c, c.sessionID));
           const idx = load(p);
           return { content: await projectInfo(p) };
         });
@@ -210,7 +215,7 @@ export default {
       registerRagTool("rag_summary", "Конспект проекта по пути", 
         { type: "object", properties: { targetPath: { type: "string" }, project: { type: "string" } }, required: ["targetPath"] },
         async (i: any, c: any) => {
-          const p = i.project || (await getProject(c.sessionID));
+          const p = i.project || (await getProject(c, c.sessionID));
           const idx = load(p);
           return { content: await summary(idx, i.targetPath) };
         });
@@ -218,7 +223,7 @@ export default {
       registerRagTool("kb_read", "Читать базу знаний проекта", 
         { type: "object", properties: { project: { type: "string" } }, required: [] },
         async (i: any, c: any) => {
-          const p = i.project || (await getProject(c.sessionID));
+          const p = i.project || (await getProject(c, c.sessionID));
           const idx = load(p);
           return { content: await kbRead(idx) };
         });
@@ -226,7 +231,7 @@ export default {
       registerRagTool("kb_add", "Добавить факт в базу знаний проекта", 
         { type: "object", properties: { fact: { type: "string" }, project: { type: "string" } }, required: ["fact"] },
         async (i: any, c: any) => {
-          const p = i.project || (await getProject(c.sessionID));
+          const p = i.project || (await getProject(c, c.sessionID));
           const idx = load(p);
           return { content: await kbAdd(idx, i.fact) };
         });
