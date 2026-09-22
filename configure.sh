@@ -142,7 +142,7 @@ servers_ours = {
   "honcho": {"type":"local",
         "command":["node", f"{root}/mcp/honcho-server.mjs"],
         "environment":{"HONCHO_BASE_URL": honcho_b},
-        "disabled": False},
+        "disabled": True},
   "chrome-devtools": {"type":"local","command":[
         "npx","-y","chrome-devtools-mcp@latest","--headless","--no-sandbox",
         "--chromeArg=--no-sandbox","--chromeArg=--disable-setuid-sandbox",

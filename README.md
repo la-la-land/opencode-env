@@ -131,10 +131,20 @@ make up              # configure.sh → start.sh all → honcho up (всё, чт
 ```
 
 `configure.sh` также ставит глобальный плагин `plugins/honcho-sync.ts` в
-`~/.config/opencode/plugins/`: он автоматически зеркалит переписку каждой сессии
-в honcho (workspace `project-<имя>`) и инжектит блок `## Honcho Memory` с
-последними сообщениями проекта в system prompt новых сессий. После обновления
-плагина перезапусти opencode, чтобы он загрузился.
+`~/.config/opencode/plugins/`. Плагин ведёт память проекта в honcho
+(workspace `project-<имя>`):
+
+- **LLM-суммаризация сессий**: когда сессия уходит в idle, плагин вызывает LLM
+  (ту же модель, что в сессии, динамически; fallback MiniMax-M3) и пишет в
+  honcho одно компактное сообщение `[Summary]` — без потока рассуждений;
+- **Инъекция памяти** в system prompt новых сессий — блок `## Honcho Memory`
+  строится СЕМАНТИЧЕСКИМ ПОИСКОМ по всему workspace (query = первый
+  user-запрос сессии), а не «хвостом» последних сообщений;
+- **Инструменты** `honcho_recall` / `honcho_save` / `honcho_sessions` /
+  `honcho_memories` регистрируются плагином (MCP-сервер honcho в конфиге
+  отключён: `mcp.servers.honcho.disabled: true`).
+
+После обновления плагина перезапусти opencode, чтобы он загрузился.
 
 По шагам (эквивалент):
 
@@ -162,7 +172,7 @@ honcho в docker не достанет её через `host.docker.internal`.
 | Сервер | Что делает |
 |---|---|
 | `rag` | поиск по коду **нескольких проектов** (лексика + BM25 + семантика bge-m3). Активный проект определяется по рабочей директории (`cwd` opencode) — где кодим, тот индекс и ищется. Инструменты: `rag_search`, `rag_where`, `rag_summary`, `rag_stats`, `rag_project` (активный + список), `kb_read`, `kb_add` |
-| `honcho` | пер-проектная память агента: свой workspace `project-<имя>` и сессии на каждый проект, авто-детект по `cwd`. Инструменты: `honcho_sessions`, `honcho_memories`, `honcho_recall` (поиск по памяти), `honcho_save` |
+| `honcho` | пер-проектная память агента: свой workspace `project-<имя>` и сессии на каждый проект, авто-детект по сессии/`cwd`. Инструменты (от плагина `honcho-sync`): `honcho_sessions`, `honcho_memories`, `honcho_recall` (поиск по памяти), `honcho_save` |
 | `vision` | картинки: метаданные, OCR (offline), `describe_image` через любую OpenAI-совместимую vision-модель. Выключен, пока не задан `VISION_MODEL` |
 | `chrome-devtools` | браузерная автоматизация (находит Chrome по `CHROME_PATH` в `stack.config`) |
 | `playwright` | браузерная автоматизация |
@@ -251,7 +261,7 @@ curl http://127.0.0.1:8000/health   # проверка
 - `.env` генерирует `configure.sh`; `VECTOR_STORE_TYPE=pgvector` — значение обязано
   совпадать с кодом honcho (не `postgres`).
 
-Инструменты (MCP-сервер `honcho`, подключается `configure.sh`):
+Инструменты (регистрирует плагин `honcho-sync`, MCP-сервер honcho отключён):
 
 - `honcho_sessions` — сессии текущего проекта;
 - `honcho_save` — сохранить факт/заметку в память проекта;
@@ -259,7 +269,11 @@ curl http://127.0.0.1:8000/health   # проверка
   по поводу биллинга?»);
 - `honcho_memories` — сколько сообщений накоплено по каждой сессии.
 
-Следующая сессия агента в том же каталоге подхватит эту память автоматически.
+Плагин сам пишет в память LLM-суммаризации завершённых сессий (той же
+моделью, что в сессии; fallback MiniMax-M3 из конфига opencode) и инжектит
+релевантную память (`## Honcho Memory`) в system prompt через семантический
+поиск по workspace. Следующая сессия агента в том же каталоге подхватит эту
+память автоматически.
 
 LLM для honcho (deriver/dialectic/summary/dream) задаётся в `stack.config`:
 `HONCHO_LLM_BASE_URL` / `HONCHO_LLM_MODEL` — укажи явно адрес любой
@@ -290,7 +304,10 @@ Makefile                 обёртки над setup/configure/start; install-bi
 stack.config.example     настройки MCP-стеков (vision, honcho, chrome)
 agents/                  кастомные агенты (implementer, reviewer)
 skills/                  скиллы агентам: auto-tz (ТЗ→оркестрация), subagent-orchestrator, browser-automation
-mcp/                     MCP-серверы: rag-server (поиск), honcho-server (память),
+plugins/                 honcho-sync.ts — память в honcho: LLM-суммаризации сессий,
+                         семантическая инъекция памяти, инструменты honcho_recall/save
+mcp/                     MCP-серверы: rag-server (поиск), honcho-server (память, отключён —
+                         инструменты даёт плагин),
                          vision-server; rag-lib.mjs (ядро поиска) + rag-cli.mjs (CLI),
                          build-index.mjs/embed.mjs (индексация)
 honcho/                  развёртывание локальной памяти (docker)
