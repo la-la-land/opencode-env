@@ -40,7 +40,8 @@ export function statsBump(pluginId, patch = {}, increment = 1) {
     const entry = (all[pluginId] ??= {})
     for (const [key, val] of Object.entries(patch)) {
       if (typeof val === "number" && !Number.isNaN(val)) {
-        entry[key] = (Number(entry[key]) || 0) + val
+        // last* — устанавливаем (timestamp/имя последнего события), остальное — суммируем
+        entry[key] = key.startsWith("last") ? val : (Number(entry[key]) || 0) + val
       } else {
         entry[key] = val
       }
