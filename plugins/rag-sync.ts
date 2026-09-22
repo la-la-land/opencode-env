@@ -23,6 +23,7 @@ import { spawn } from "node:child_process"
 
 // Абсолютные пути: плагин лежит в ~/.config/opencode/plugins/, а ядро RAG — в репо.
 import * as ragLib from "/home/leonid/opencode-env/mcp/rag-lib.mjs"
+import { statsBump } from "./stats-common.mjs"
 
 const {
   scanProjects,
@@ -89,6 +90,7 @@ async function reindexProject(
   if (r2.code !== 0) {
     return `Чанки готовы, но вектора не залиты (${project.name}):\n${tail(r2.out, 2000)}`
   }
+  statsBump("rag-sync", { reindexes: 1, lastReindex: project.name, lastProject: project.src })
   const last = tail(r1.out.split("\n").pop() || "", 200) + "\n" + tail(r2.out, 1500)
   return `✅ Переиндексировано: ${project.name} (${project.src})\n${last}`
 }
@@ -271,6 +273,7 @@ export default {
         void (async () => {
           try {
             const out = await reindexProject(proj, false)
+            statsBump("rag-sync", { autoReindexes: 1, lastActivity: Date.now() })
             console.log(`[rag-sync] ${tail(out, 1200)}`)
           } catch (e: any) {
             console.error(`[rag-sync] авто-переиндексация ${proj.name} упала:`, e?.message ?? e)
@@ -307,6 +310,7 @@ export default {
         const hits = await searchStructured(idx, query, 3)
         let block: string | null = null
         if (hits.length) {
+          statsBump("rag-sync", { contextBlocks: 1, lastActivity: Date.now() })
           const lines = [`## RAG Context (проект: ${proj.name})`]
           for (const h of hits) {
             const score =
@@ -366,6 +370,7 @@ export default {
           const p = await projectFrom(i, c)
           const idx = load(p.name)
           const hits = await searchStructured(idx, i.query, 5)
+          statsBump("rag-sync", { searches: 1, lastActivity: Date.now() })
           if (!hits.length) return { content: "Ничего не найдено. Индекс пуст или запрос нерелевантен." }
           return {
             content: hits
@@ -392,6 +397,7 @@ export default {
         async (i: any, c: any) => {
           const p = await projectFrom(i, c)
           const idx = load(p.name)
+          statsBump("rag-sync", { wheres: 1, lastActivity: Date.now() })
           return { content: where(idx, i.phrase, 8) }
         },
       )

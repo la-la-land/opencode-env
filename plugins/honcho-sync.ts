@@ -19,6 +19,7 @@
  */
 import fs from "node:fs"
 import path from "node:path"
+import { statsBump } from "./stats-common.mjs"
 
 // ── конфиг ──────────────────────────────────────────────────────────
 const HONCHO_BASE = "http://127.0.0.1:8000"
@@ -332,6 +333,7 @@ ${transcript}
         await postMessages(ws, honchoSid, [
           { content: `[Summary]\n${summary.slice(0, 6000)}`, peer_id: "opencode" },
         ])
+        statsBump("honcho-sync", { summaries: 1, lastActivity: Date.now() })
         summarizedVersion.set(sessionID, ver)
         console.log(`[honcho-sync] summary saved: ${ws}/${honchoSid} (v${ver})`)
       } catch (err) {
@@ -456,6 +458,7 @@ ${transcript}
         let block: string | null = null
 
         if (hits.length) {
+          statsBump("honcho-sync", { memoryBlocks: 1, lastActivity: Date.now() })
           const lines: string[] = ["## Honcho Memory (проект: " + proj + ")"]
           for (const m of hits) {
             const who = m.peer_id === "user" ? "User" : m.peer_id === "opencode" ? "AI" : m.peer_id || "?"
@@ -527,6 +530,7 @@ ${transcript}
         },
         options: { namespace: "honcho" },
         execute: async (input: any, context: any) => {
+          statsBump("honcho-sync", { recalls: 1, lastActivity: Date.now() })
           const ws = input?.project ? "project-" + sanitize(input.project) : await wsFromContext(context)
           const q = String(input?.query ?? "")
           const limit = Math.max(1, Math.min(20, Number(input?.limit) || 5))
@@ -558,6 +562,7 @@ ${transcript}
         },
         options: { namespace: "honcho" },
         execute: async (input: any, context: any) => {
+          statsBump("honcho-sync", { saves: 1, lastActivity: Date.now() })
           const ws = input?.project ? "project-" + sanitize(input.project) : await wsFromContext(context)
           const fact = String(input?.fact ?? "").slice(0, 20000)
           if (!fact) return { content: "Пустой факт — не сохранено." }
