@@ -138,7 +138,7 @@ if os.environ.get("LOCAL_PROVIDER", "1") != "0":
 
 # ---------- MCP (добавляем/обновляем ТОЛЬКО свои серверы) ----------
 servers_ours = {
-  "rag": {"type":"local","command":["node", f"{root}/mcp/rag-server.mjs"], "disabled": False},
+  "rag": {"type":"local","command":["node", f"{root}/mcp/rag-server.mjs"], "disabled": True},
   "honcho": {"type":"local",
         "command":["node", f"{root}/mcp/honcho-server.mjs"],
         "environment":{"HONCHO_BASE_URL": honcho_b},
