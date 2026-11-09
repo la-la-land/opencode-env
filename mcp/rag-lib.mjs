@@ -2,7 +2,7 @@
 /**
  * rag-lib.mjs — общее ядро RAG (используют rag-server.mjs и rag-cli.mjs).
  * Чанки и лексика (BM25) — sqlite rag/projects/<name>/index.db;
- * вектора — Qdrant :6333 (коллекция rag_<name>, dim 1024, cosine).
+ * вектора — Qdrant :6333 (коллекция rag_<name>, dim 384 (MiniLM), cosine).
  */
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";

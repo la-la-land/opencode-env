@@ -27,7 +27,7 @@ const RAG_PROJECTS_DIR =
   process.env.RAG_PROJECTS_DIR ??
   path.join(process.env.HOME ?? "~", "opencode-env", "rag", "projects")
 // Модель на случай, если у сессии не удалось узнать модель (или она недоступна).
-const FALLBACK_MODEL = { providerID: "MiniMax", id: "MiniMax-M3" }
+const FALLBACK_MODEL = { providerID: "minimax-coding-plan", id: "MiniMax-M3" }
 // Порог простоя сессии (мс) перед суммаризацией.
 const IDLE_SUMMARIZE_DELAY = Number(process.env.HONCHO_IDLE_SUMMARIZE_DELAY ?? 45_000)
 // Лимит входа суммаризатора (символов): начало + конец сессии.

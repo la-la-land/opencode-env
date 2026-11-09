@@ -138,11 +138,11 @@ if os.environ.get("LOCAL_PROVIDER", "1") != "0":
 
 # ---------- MCP (добавляем/обновляем ТОЛЬКО свои серверы) ----------
 servers_ours = {
-  "rag": {"type":"local","command":["node", f"{root}/mcp/rag-server.mjs"], "disabled": True},
+  "rag": {"type":"local","command":["node", f"{root}/mcp/rag-server.mjs"], "disabled": False},
   "honcho": {"type":"local",
         "command":["node", f"{root}/mcp/honcho-server.mjs"],
         "environment":{"HONCHO_BASE_URL": honcho_b},
-        "disabled": True},
+        "disabled": False},
   "chrome-devtools": {"type":"local","command":[
         "npx","-y","chrome-devtools-mcp@latest","--headless","--no-sandbox",
         "--chromeArg=--no-sandbox","--chromeArg=--disable-setuid-sandbox",
@@ -168,14 +168,24 @@ servers = mcp.get("servers")
 if not isinstance(servers, dict):
     servers = {}; mcp["servers"] = servers
 added = []
+updated = []
 for k, v in servers_ours.items():
     already = k in servers or (k in mcp and k != "servers")
     if not already:
         servers[k] = v
         added.append(k)
+    else:
+        # наш сервер уже есть — обновляем ТОЛЬКО его флаг disabled
+        # (команда/окружение могли устареть), чужие серверы не трогаем.
+        tgt = servers.get(k, mcp.get(k))
+        if isinstance(tgt, dict) and "disabled" in tgt and tgt.get("disabled") != v.get("disabled"):
+            tgt["disabled"] = v.get("disabled")
+            updated.append(k)
 if added:
     print(f"[merge] MCP добавлены: {', '.join(added)}")
-else:
+if updated:
+    print(f"[merge] MCP обновлены (disabled): {', '.join(updated)}")
+if not added and not updated:
     print("[merge] наши MCP уже есть — ничего не добавлено")
 
 exp = cfg.setdefault("experimental", {})
@@ -205,7 +215,7 @@ fi
 
 # ---------- установка глобального плагина honcho-sync (авто-зеркало в honcho) ----------
 # Источник — репо; ставится в ~/.config/opencode/plugins/ (автодискавери глобальных плагинов).
-myplugins=("honcho-sync.ts" "rag-sync.ts")
+myplugins=("honcho-sync.ts" "rag-sync.ts" "stats-common.mjs")
 mkdir -p "$CONFIG_DIR/plugins"
 for pl in "${myplugins[@]}"; do
   src="$ROOT/plugins/$pl"

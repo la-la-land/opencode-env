@@ -1,5 +1,5 @@
 # Qdrant — векторная БД для RAG (локально, без Docker)
-# Коллекции: одна на проект (имя = имя проекта). dim = 1024 (bge-m3).
+# Коллекции: одна на проект (имя = имя проекта). dim = 384 (MiniLM).
 storage:
   storage_path: ./qdrant/storage
 service:

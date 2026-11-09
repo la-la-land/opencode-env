@@ -4,7 +4,7 @@
  *
  * Для каждого проекта в rag/projects/<name>/index.db (sqlite) лежат чанки
  * и лексика (BM25). Вектора уходят в Qdrant :6333 — коллекция rag_<name>
- * (dim 1024, distance Cosine), payload: path/start_line/end_line/lang.
+ * (dim 384 — MiniLM, distance Cosine), payload: path/start_line/end_line/lang.
  * Уже залитые проекты (points_count == chunks) пропускаются.
  *
  * Требует запущенные bge-m3 (:8095) и Qdrant (:6333):
@@ -25,12 +25,12 @@ const ROOT = path.resolve(__dirname, "..");
 const PROJECTS_DIR = process.env.RAG_PROJECTS_DIR ?? path.join(ROOT, "rag", "projects");
 const EMBED_URL = process.env.RAG_EMBED_URL ?? "http://127.0.0.1:8095/v1/embeddings";
 const QDRANT_URL = (process.env.QDRANT_URL ?? "http://127.0.0.1:6333").replace(/\/+$/, "");
-const DEFAULT_DIM = parseInt(process.env.RAG_EMBED_DIM || "1024", 10);
+const DEFAULT_DIM = parseInt(process.env.RAG_EMBED_DIM || "384", 10);
 const BATCH = 64;
-// bge-m3 запускается с физическим батчем 2048-8192 токенов: слишком длинный
+// MiniLM-L12-v2 (384-dim, soft-limit ~512 токенов на вход): слишком длинный
 // единичный вход валит весь запрос (embed HTTP 500). Режем символы, чтобы
-// вход гарантированно влезал в лимит токенов.
-const MAX_CHARS = parseInt(process.env.RAG_EMBED_MAX_CHARS || "2000", 10);
+// вход гарантированно влезал в лимит токенов модели.
+const MAX_CHARS = parseInt(process.env.RAG_EMBED_MAX_CHARS || "600", 10);
 
 const args = process.argv.slice(2);
 let only = null, reset = false;

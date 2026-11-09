@@ -15,4 +15,12 @@ honcho-src/
 .honcho/
 stack.config
 rag/PROJECT_KNOWLEDGE.md
+# tiktoken BPE-кэш (5.3 МБ бинарей) — восстанавливается скриптом
+# honcho/fetch-tiktoken-cache.sh: o200k с HF, cl100k пересборкой из
+# tokenizer.json (sha256 сверяется с expected_hash tiktoken).
+honcho/.tiktoken-cache/
+# npm-зависимости MCP-серверов (218k файлов, восстанавливаются npm ci)
+node_modules/
+# runtime-маркеры
+.qdrant-initialized
 .DS_Store

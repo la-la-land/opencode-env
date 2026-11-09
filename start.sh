@@ -21,12 +21,19 @@ else
     [ -d "$p" ] && { export LD_LIBRARY_PATH="$p${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; break; }
   done
 fi
+# similar de llama.cpp prebuilt (llama.cpp-bin/llama-b12182/)
+export LD_LIBRARY_PATH="$(pwd)/llama.cpp-bin/llama-b12182${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# prebuilt-сборка требует явного пути к бэкенду (иначе "no backends are loaded")
+export GGML_BACKEND_PATH="$(pwd)/llama.cpp-bin/llama-b12182"
 
-BIN=./llama.cpp-bin/llama-server
-EMBED=models/bge-m3-q8_0.gguf
+BIN=./llama.cpp-bin/llama-b12182/llama-server
+EMBED=models/paraphrase-multilingual-MiniLM-L12-v2-Q8_0.gguf
 MAIN_MODEL=models/gemma-4-12b-it-Q4_K_M.gguf
 LOG=rag/main-server.log
 ALIAS="${ALIAS:-local-coder}"
+# bge-m3 из репо заменяем на крошечную MiniLM (384-dim, ~120MB, CPU):
+# лёгкий вариант для слабого ПК — embedding работает (RAG/Honcho), а
+# локальная LLM :1234 по-прежнему НЕ ставится (Gemma — только make model-gemma).
 # Обрати внимание: --host 0.0.0.0 — llama должна быть видна из docker-контейнеров
 # honcho (через host.docker.internal, см. honcho/docker-compose.override.yml).
 
@@ -35,12 +42,13 @@ start_embed() {
     echo "embed уже работает (:8095)"; return
   fi
   [ -x "$BIN" ] || { echo "нет $BIN — запусти ./setup.sh"; exit 1; }
-  echo "старт embed bge-m3 (:8095)..."
-  setsid "$BIN" -m "$EMBED" --embedding --host 127.0.0.1 --port 8095 \
-    -c 8192 -b 8192 -ub 8192 --threads "$(nproc)" \
+  echo "старт embed MiniLM (384-dim, :8095, тихий режим)..."
+  # тихий режим: nice +threads 2 — сильной нагрузки на слабом CPU нет
+  setsid nice -n 10 "$BIN" -m "$EMBED" --embedding --pooling mean --host 0.0.0.0 --port 8095 \
+    -c 4096 -b 2048 -ub 2048 --threads "${EMBED_THREADS:-2}" \
     > rag/embed-server.log 2>&1 < /dev/null &
   disown
-  for i in $(seq 1 20); do
+  for i in $(seq 1 30); do
     curl -s --max-time 2 http://127.0.0.1:8095/health >/dev/null 2>&1 && { echo "embed UP"; return; }
     sleep 1
   done
@@ -73,12 +81,12 @@ start_main() {
     return 0
   fi
   echo "старт Gemma 4 12B (:1234, ctx 256K, alias $ALIAS)..."
-  setsid "$BIN" \
+  setsid nice -n 5 "$BIN" \
     -m "$MAIN_MODEL" -c 262144 \
     --host 0.0.0.0 --port 1234 --alias "$ALIAS" \
     --flash-attn on \
     --parallel 1 --gpu-layers "${NGL:-99}" \
-    --threads 24 --threads-batch 24 --no-webui \
+    --threads "${MAIN_THREADS:-4}" --threads-batch "${MAIN_THREADS:-4}" --no-webui \
     > "$LOG" 2>&1 < /dev/null &
   disown
   for i in $(seq 1 90); do
