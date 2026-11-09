@@ -1,10 +1,31 @@
 # Auto-merge с официальным docker-compose.yml honcho.
-# Даёт контейнерам доступ к хосту (llama.cpp :1234) через host.docker.internal.
+# Даёт контейнерам доступ к хосту (mini-embed :8095) через host.docker.internal;
+# ограничивает RAM deriver, выключает ненужный нам honcho-mcp контейнер (:3000).
+#
+# tiktoken (o200k_base / cl100k_base) при первом импорте тянет BPE-файлы с
+# openaipublic.blob.core.windows.net — в этой сети домен режет прокси
+# ("Application Control Violation"), TLS-хендшейк зависает, requests.get висит
+# без таймаута, и контейнер honcho-api не проходит старт (health-check →
+# unhealthy, /health не отвечает, MCP honcho таймаутится на 300 с).
+# Файлы лежат локально (sha256 сверены с expected_hash в tiktoken), монтируем
+# их как кэш и указываем TIKTOKEN_CACHE_DIR — сеть больше не нужна.
+# Кэш готовит honcho/fetch-tiktoken-cache.sh (его зовёт setup-honcho.sh).
 services:
   api:
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    mem_limit: 1g
+    environment:
+      - TIKTOKEN_CACHE_DIR=/app/.tiktoken-cache
+    volumes:
+      - ./.tiktoken-cache:/app/.tiktoken-cache:ro
   deriver:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     mem_limit: 2g
+    environment:
+      - TIKTOKEN_CACHE_DIR=/app/.tiktoken-cache
+    volumes:
+      - ./.tiktoken-cache:/app/.tiktoken-cache:ro
+  mcp:
+    profiles: ["disabled-off"]   # контейнер honcho-mcp (порт :3000) не нужен: MCP у нас отдельные

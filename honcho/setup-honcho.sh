@@ -27,6 +27,11 @@ fi
 
 cp docker-compose.override.yml "$HONCHO_SRC/docker-compose.override.yml"
 
+# tiktoken-кэш: без него контейнер api зависает на старте (сеть до
+# openaipublic.blob.core.windows.net в этой машине режется).
+# зовём через bash — не зависим от бита +x на файле
+bash ./fetch-tiktoken-cache.sh "$HONCHO_SRC/.tiktoken-cache"
+
 cd "$HONCHO_SRC"
 echo "поднимаю контейнеры (при первом запуске — сборка образов; дальше — моментом)..."
 docker compose up -d
