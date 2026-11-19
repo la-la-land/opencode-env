@@ -21,6 +21,11 @@ rag/PROJECT_KNOWLEDGE.md
 honcho/.tiktoken-cache/
 # npm-зависимости MCP-серверов (218k файлов, восстанавливаются npm ci)
 node_modules/
+# python-кэш (update_readme.py)
+__pycache__/
+*.pyc
 # runtime-маркеры
 .qdrant-initialized
 .DS_Store
+# блокировки файлов редакторами (LibreOffice и т.п.)
+.~lock.*#

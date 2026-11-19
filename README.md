@@ -1,188 +1,363 @@
 # opencode-env
 
-Развёртываемое окружение для **агентной разработки с opencode**: установщик, стек
-инфраструктуры (эмбеддинги / RAG / браузер / память), конфиг, агенты и локальная
-память (Honcho). Всё локально, без облачных сервисов.
+Воспроизводимое окружение для **агентной разработки с opencode**: одна папка в
+репозитории, из которой ставятся инфраструктура (эмбеддинги / RAG / браузер),
+память агента (Honcho), MCP-серверы, плагины и скиллы.
 
-**Главный принцип: локальная LLM не обязательна и не ставится по умолчанию.**
-Модель для работы берётся из **выбранной в opencode-сессии** (`/models`) —
-она же наследуется суб-агентами. Локальная **Gemma 4 12B** ставится отдельной
-командой, если нужна (`make model-gemma`). Удалённые модели — провайдеры,
-которые добавляются нативно в opencode (`/providers`, `auth login`,
-`provider add`); наш configure.sh их не трогает.
+Главный принцип: **в стеке нет локальной LLM**. Модель для работы выбирается
+прямо в сессии opencode (`/models`) и наследуется суб-агентами; удалённые
+провайдеры добавляются нативно (`/providers`, `auth login`, `provider add`).
+Локально крутится только то, что реально нужно каждый день: векторный поиск
+по коду и память проекта.
 
 ```
-llama.cpp (:8095)  ── bge-m3 (эмбеддинги для RAG, работает на CPU)
-llama.cpp (:1234)  ── Gemma 4 12B (ОПЦИОНАЛЬНО, только если установлена)
-Qdrant   (:6333)   ── векторная БД (RAG)
-Honcho   (:8000)   ── память агента (docker), LLM для него задаётся отдельно
-MCP              ── rag, vision, chrome-devtools, playwright
+llama.cpp (:8095)  ── эмбеддинги для RAG (CPU, без GPU)
+Qdrant   (:6333)   ── векторная БД RAG
+Honcho   (:8000)   ── память агента (docker), LLM для неё — удалённый провайдер
+MCP                ── rag, honcho, chrome-devtools, playwright, vision
+Плагины            ── ~/.config/opencode/plugins/{honcho-sync.ts,rag-sync.ts,stats-common.mjs}
+Скиллы             ── ~/.config/opencode/skills/{auto-tz,subagent-orchestrator,browser-automation}
 ```
+
+Всё скачивается/собирается на месте — в git нет ни моделей, ни бинарей.
 
 ---
 
 ## Требования
 
-- Linux, `bash`, `curl`, `git`, `python3` (3.10+), `node` (22+, нужен `node:sqlite`)
-- GPU NVIDIA нужна **только** для локальной Gemma (16 GB VRAM достаточно).
-  Всё остальное (RAG, эмбеддинги, браузер) работает на CPU/без GPU.
-- Для Honcho: `docker` с compose v2.
+| Что | Версия / детали | Зачем |
+|---|---|---|
+| Linux + `bash` | — | все скрипты репозитория на bash |
+| `node` | **>= 20** (нужен встроенный `node:sqlite`) | MCP-серверы, плагины, индекс RAG |
+| `python3` | 3.10+ | генерация конфигов (`configure.sh`), tiktoken |
+| `curl`, `git` | — | скачивание моделей/бинарей, клонирование |
+| `docker` | compose **v2** | только для Honcho (память агента) |
+| Chrome / Chromium | путь в `CHROME_PATH` | MCP `chrome-devtools` |
+| Диск | **~800 МБ** под качественную embed-модель (bge-m3 Q8_0, 590 МБ) или **126 МБ** под лёгкую | см. «Две векторные модели» |
+| RAM | 2 ГБ+ | эмбеддинги считаются на CPU |
 
-## Быстрый старт (новый ПК) — сценарий «без локальной LLM»
+GPU не нужен: и эмбеддинги, и RAG, и браузер работают на CPU.
 
-Это режим по умолчанию: подходит ноутбуку, серверу без GPU и всем, кто не хочет
-тянуть 6.7 GB модель. Инфраструктура (RAG/эмбеддинги/honcho/MCP) разворачивается
-полностью, а модели подставляются из выбранных в opencode.
+---
+
+## Быстрый старт (новая ОС)
+
+Проверено на чистой машине: `git clone` → одна команда установки → `make up` →
+`opencode`.
+
+### 1. Клонируем репозиторий
 
 ```sh
-git clone git@github.com:la-la-land/opencode-env.git
+git clone https://github.com/la-la-land/opencode-env.git
 cd opencode-env
+```
 
-# 1) настройка MCP-стеков (модель/провайдеры НЕ трогаем — добавляются нативно)
+### 2. Готовим конфиг
+
+```sh
 cp stack.config.example stack.config
-#    → VISION_* (по желанию), HONCHO_LLM_* (по желанию)
-#    → удалённый провайдер: opencode → /providers (auth login / provider add)
-
-# 2) установка инфраструктуры + honcho + генерация конфига opencode
-make setup WITH_HONCHO=1
-
-# 3) запуск (без локальной LLM: embed + qdrant)
-make infra
-
-# 4) в проекте — opencode сам подхватит конфиг и все MCP
-opencode            # модель: /models (удалённая), суб-агенты наследуют её
 ```
 
-Что делает установка (см. `setup.sh`):
+`stack.config` — единственный файл, который ты правишь руками; сам он **не в
+git** (в `.gitignore`), так что ключи туда не попадают.
 
-1. Сборка `llama.cpp` (CPU-версия — для embed bge-m3; RAG-семантика работает).
-2. Скачивание **bge-m3** (Q8, 606 MB) — эмбеддинги для RAG.
-3. Установка **Qdrant** (tar.gz, без Docker).
-4. Опционально **Honcho** (docker) — локальная память.
-5. Генерация конфига opencode (**`configure.sh`** из `stack.config`).
-
-Никаких моделей/бинарей в git — всё скачивается/собирается на месте.
-
-## Локальная Gemma — отдельной командой (если нужна)
+Минимум, что нужно заполнить:
 
 ```sh
-make model-gemma       # собрать llama.cpp с CUDA + скачать Gemma 4 12B (6.7 GB)
-make start             # поднять всё: embed :8095 + qdrant :6333 + main :1234
+# ключ для vision-MCP (описание картинок)
+VISION_API_KEY=<ВАШ_КЛЮЧ>
+# ключ LLM для Honcho — необязательно: если не задан, setup сам возьмёт
+# ключ из базы opencode (cred «MiniMax Token Plan»)
+# HONCHO_LLM_API_KEY=<ВАШ_КЛЮЧ>
 ```
 
-`model-gemma` пересобирает llama.cpp с CUDA (pip-пакеты nvidia ставятся сами).
-Провайдер `local` (llama.cpp) подключается всегда; модель выбираешь в `/models`
-(`local/coder`, если установлена Gemma).
-
-## Модель берётся из выбранной в сессии
-
-- **Основной агент**: любая модель из `providers` — переключение в opencode
-  через `/models` прямо во время работы.
-- **Суб-агенты** (`general`, `explore`, `implementer`, `reviewer`): **наследуют
-  модель текущей сессии** — одна команда `/models` переключает весь функционал.
-- **Инструменты (MCP)**: вызываются моделью сессии автоматически — RAG/браузер/
-  vision-OCR не привязаны ни к какому LLM-адресу. Своя модель нужна только
-  `vision` (для «описания картинки» — `VISION_*`) и `honcho` (см. ниже).
+Ключ можно и не писать в файл, а отдать переменной окружения:
 
 ```sh
-make set-vision MODEL=qwen3-vl-flash BASE=https://api.minimax.io/v1 KEY=...
+export VISION_API_KEY=<ВАШ_КЛЮЧ>
 ```
 
-`configure.sh` пишет:
-
-- `~/.config/opencode/opencode.json` (или `--dir <проект>` — прямо в проект):
-  провайдер `local` (llama.cpp) + наши MCP. Модель **не пишется** — opencode
-  сам даёт список моделей в `/models`;
-- `honcho/.env` — модели для honcho.
-
-По умолчанию `configure.sh` работает в режиме **слияния (merge)**: читает
-существующий `opencode.json` и добавляет только недостающее — провайдер
-`local`, MCP (`rag`, `honcho`, браузеры, `vision` если задан). Чужие
-провайдеры, MCP, агенты, плагины и модель **не трогаются** (не перезатирается
-даже `chrome-devtools` со своим путём к Chrome). Полная перегенерация с нуля —
-`--force` (затирает чужое!), вообще не трогать файл — `--if-missing`.
-
-## Подстройка под модель
-
-В `stack.config` — только настройки MCP-стеков (шаблон — `stack.config.example`;
-сам `stack.config` не в git — там могут быть ключи). Модели и провайдеры тут
-**не настраиваются**: модель — в `/models` сессии, удалённые провайдеры —
-нативно в opencode:
+### 3. Установка
 
 ```sh
-# stack.config
-LOCAL_LLM_BASE_URL=http://127.0.0.1:1234/v1  # локальная LLM (llama.cpp, если установлена)
-LOCAL_LLM_MODEL=local-coder
-VISION_MODEL=                         # пусто = vision-mcp выключен
-VISION_BASE_URL=
-VISION_API_KEY=
-HONCHO_LLM_BASE_URL=                  # LLM для honcho (из-за docker: host.docker.internal)
-HONCHO_LLM_MODEL=
-CHROME_PATH=/usr/bin/google-chrome    # для chrome-devtools MCP
+make setup EMBED_MODEL=minilm WITH_HONCHO=1
 ```
 
-## Запуск/остановка стека
+* `EMBED_MODEL=minilm` — лёгкий вариант для слабого ПК; без этой переменной
+  ставится модель по умолчанию (качественнее, но больше по размеру) — выбор
+  описан в разделе «Две векторные модели».
+* `WITH_HONCHO=1` — развернуть память агента в docker. Без него стек поднимется
+  без Honcho.
 
-**Одна команда поднимает всё установленное** (конфиги opencode + llama/embed/qdrant
-+ honcho), идемпотентно — после ребута достаточно:
+Установщик (`setup.sh`) за один проход:
+
+1. проверяет preflight (node/python3/curl/git, docker — если включён Honcho);
+2. ставит npm-зависимости MCP-серверов (`npm ci` в `mcp/` — от этого зависят
+   `sharp` и `tesseract.js` для vision);
+3. кладёт готовый бинарь `llama.cpp` (`llama-server`) в `llama.cpp-bin/`;
+4. скачивает embed-модель в `models/`;
+5. ставит Qdrant (tar.gz, без docker);
+6. ставит браузер Playwright (`npx -y playwright install chromium`);
+7. проверяет Chrome (`CHROME_PATH`) и предупреждает, если его нет;
+8. ставит скиллы (симлинки в `~/.config/opencode/skills`) и `rag`
+   (симлинк в `~/.local/bin/rag`);
+9. разворачивает Honcho (если `WITH_HONCHO=1`);
+10. генерирует `~/.config/opencode/opencode.json` и `honcho/.env`
+    (`configure.sh`) и печатает статус сервисов.
+
+Скрипт идемпотентный — его можно запускать повторно, он ничего не ломает.
+
+### 4. Запуск стека
 
 ```sh
-make up              # configure.sh → start.sh all → honcho up (всё, что уже установлено)
+make up
 ```
 
-`configure.sh` также ставит глобальный плагин `plugins/honcho-sync.ts` в
-`~/.config/opencode/plugins/`. Плагин ведёт память проекта в honcho
-(workspace `project-<имя>`):
+`make up` = конфиги opencode + embed `:8095` + Qdrant `:6333` + Honcho `:8000`.
+Идемпотентно: **после перезагрузки ОС достаточно `make up`** — всё поднимется
+снова.
 
-- **LLM-суммаризация сессий**: когда сессия уходит в idle, плагин вызывает LLM
-  (ту же модель, что в сессии, динамически; fallback MiniMax-M3) и пишет в
-  honcho одно компактное сообщение `[Summary]` — без потока рассуждений;
-- **Инъекция памяти** в system prompt новых сессий — блок `## Honcho Memory`
-  строится СЕМАНТИЧЕСКИМ ПОИСКОМ по всему workspace (query = первый
-  user-запрос сессии), а не «хвостом» последних сообщений;
-- **Инструменты** `honcho_recall` / `honcho_save` / `honcho_sessions` /
-  `honcho_memories` регистрируются плагином (MCP-сервер honcho в конфиге
-  отключён: `mcp.servers.honcho.disabled: true`).
-
-После обновления плагина перезапусти opencode, чтобы он загрузился.
-
-По шагам (эквивалент):
+### 5. Работа в opencode
 
 ```sh
-make infra           # ./start.sh infra — embed :8095 + qdrant :6333 (без LLM)
-./start.sh all       # + main :1234 (только если установлена Gemma)
-make honcho          # развернуть honcho (docker, локальная память)
-./start.sh health    # статус: 1234 LLM, 8095 embed, 6333 qdrant, 8000 honcho
-make down            # остановить стек + honcho (volumes сохраняются)
+opencode
 ```
 
-Важно: llama в `./start.sh` слушает **0.0.0.0:1234** (не 127.0.0.1) — иначе
-honcho в docker не достанет её через `host.docker.internal`.
+* модель сессии — `/models` (удалённый провайдер, `auth login` / `provider add`);
+* список MCP — `opencode mcp list` (внутри сессии — `/mcp`);
+* агент сразу видит скиллы (`auto-tz`, `subagent-orchestrator`,
+  `browser-automation`) и инструменты RAG/Honcho.
 
-Полезное в `start.sh`:
+---
 
-- Автоопределение CUDA-библиотек (pip-пакеты `nvidia/cu13`, системная CUDA);
-  переопределить: `LLMSTACK_CUDA_LIB=/path` `./start.sh main`.
-- Без GPU `main` не запускается — работай через удалённый провайдер.
+## Проверка после установки
 
-## MCP-серверы
+```sh
+# 1) сервисы отвечают (или одной командой: make health)
+curl -sf http://127.0.0.1:8095/health  >/dev/null && echo "[ ok ] embed  :8095"
+curl -sf http://127.0.0.1:6333/healthz >/dev/null && echo "[ ok ] qdrant :6333"
+curl -sf http://127.0.0.1:8000/health  >/dev/null && echo "[ ok ] honcho :8000"
 
-Подключаются в `opencode.json` автоматически (`configure.sh`):
+# 2) все MCP-серверы подняты и подключены
+opencode mcp list
+#   ожидаемо: rag, honcho, chrome-devtools, playwright, vision → connected
 
-| Сервер | Что делает |
+# 3) vision: описать картинку (нужен файл png/jpg)
+opencode run "опиши картинку ~/Картинки/test.png"
+#   агент вызовет vision.describe_image; офлайн-инструменты image_info/ocr_image
+#   тоже доступны
+
+# 4) память honcho: сессии и факты по текущему проекту
+opencode run "покажи сессии памяти проекта"
+#   агент вызовет honcho_sessions / honcho_memories
+
+# 5) RAG: индекс проекта и поиск
+cd ~/myproject && rag index && rag search "как делается рассылка"
+```
+
+---
+
+## Две векторные модели
+
+Стек работает с любой из двух моделей — размерность векторов у них разная
+(1024 и 384). Выбор — на этапе установки и через `stack.config`.
+
+| Модель | Размерность | Размер файла | Pooling | Когда брать |
+|---|---|---|---|---|
+| **bge-m3** (по умолчанию) | 1024 | 590 МБ (`models/bge-m3-q8_0.gguf`, Q8_0) | `cls` | качество поиска важнее, ПК тянет |
+| **MiniLM** (`paraphrase-multilingual-MiniLM-L12-v2`) | 384 | 126 МБ (`models/paraphrase-multilingual-MiniLM-L12-v2-Q8_0.gguf`) | `mean` | слабый ПК, мало места, быстрее |
+
+### Как переключить
+
+```sh
+# 1) выбрать модель в stack.config (добавить или поменять строку EMBED_MODEL=)
+sed -i 's/^EMBED_MODEL=.*/EMBED_MODEL=minilm/' stack.config
+
+# 2) докачать/поставить модель и перегенерировать конфиги
+make setup EMBED_MODEL=minilm WITH_HONCHO=1
+
+# 3) перезапустить стек
+make up
+```
+
+То же флагом установщика: `./setup.sh --embed-model minilm --honcho 1`.
+Допустимые значения `--embed-model`: `bge-m3` (качественная) и `minilm` (лёгкая).
+
+Только скачать embed-модель (без остальной установки) — `make models`.
+
+### Важно: размерность фиксируется в коллекциях
+
+Размерность вектора записывается **в коллекции Qdrant** (`rag_<проект>`) и **в
+настройках Honcho** (`EMBEDDING_VECTOR_DIMENSIONS`). Поэтому после смены модели
+старые коллекции несовместимы с новыми векторами — их надо пересоздать и
+проиндексировать заново:
+
+```sh
+cd ~/myproject
+rag index                       # пересобирает индекс и перезаливает вектора
+node mcp/embed.mjs --project myproject --reset   # вариант: пересоздать коллекцию
+```
+
+То же для Honcho: `make up` перегенерирует `honcho/.env` с новой размерностью,
+но старые записи памяти остаются в базе — при желании пересоздай volume.
+
+### Переменные `stack.config` (единый контракт)
+
+| Переменная | Значения | Смысл |
+|---|---|---|
+| `EMBED_MODEL` | `bge-m3` \| `minilm` | какая векторная модель используется |
+| `EMBED_FILE` | `models/bge-m3-q8_0.gguf` \| `models/paraphrase-multilingual-MiniLM-L12-v2-Q8_0.gguf` | файл в `models/` |
+| `EMBED_DIM` | `1024` \| `384` | размерность вектора (в Qdrant и в Honcho) |
+| `EMBED_POOLING` | `cls` \| `mean` | pooling llama.cpp для этой модели |
+| `EMBED_URL` | https-ссылка | откуда качать файл |
+| `VISION_MODEL` | напр. `MiniMax-M3` | пусто = vision выключен |
+| `VISION_BASE_URL` | `https://api.minimax.io/v1` | OpenAI-совместимый endpoint |
+| `VISION_API_KEY` | ключ | можно задать переменной окружения `VISION_API_KEY` |
+| `HONCHO_LLM_BASE_URL` | `https://api.minimax.io/v1` | LLM памяти honcho |
+| `HONCHO_LLM_MODEL` | `MiniMax-M3` | модель памяти honcho |
+| `HONCHO_LLM_API_KEY` | ключ | пусто = взять из `opencode.db` (cred «MiniMax Token Plan») |
+| `CHROME_PATH` | `/usr/bin/google-chrome` | для MCP chrome-devtools |
+
+Дополнительно код читает: `RAG_EMBED_DIM` (размерность для `mcp/embed.mjs`,
+дефолт = `EMBED_DIM`), `RAG_EMBED_MODEL`, `RAG_EMBED_URL`, `QDRANT_URL`,
+`HONCHO_BASE_URL`, `OPENCODE_CONFIG_DIR`.
+
+---
+
+## Vision — описание картинок
+
+MCP-сервер `vision` умеет: `image_info` (размеры, формат, EXIF, доминирующие
+цвета), `ocr_image` (OCR офлайн, `rus+eng`), `describe_image` (описание картинки
+мультимодальной моделью через OpenAI-совместимый API).
+
+**Включение** — одним из двух способов:
+
+```sh
+# а) через configure.sh (ключ пишется в stack.config)
+./configure.sh set-vision MiniMax-M3 https://api.minimax.io/v1 <ВАШ_КЛЮЧ>
+
+# б) через stack.config
+VISION_MODEL=MiniMax-M3
+VISION_BASE_URL=https://api.minimax.io/v1
+VISION_API_KEY=<ВАШ_КЛЮЧ>
+```
+
+После правки — `./configure.sh` (или `make config`), затем перезапустить opencode.
+
+**Требования**: npm-зависимости `mcp/` (`sharp` — метаданные и цвета,
+`tesseract.js` — OCR). Ставятся установщиком через `npm ci`; если руками:
+
+```sh
+cd mcp && npm ci
+```
+
+`MiniMax-M3` умеет принимать картинки (запрос уходит в
+`/v1/chat/completions` с `image_url` data-URI), так что `describe_image`
+работает через любую OpenAI-совместимую мультимодалку.
+
+Пока `VISION_MODEL` пуст — сервер `vision` в `opencode.json` не появляется
+(это осознанно: лишний MCP без ключа только шумит в списке).
+
+---
+
+## Браузер: Playwright и chrome-devtools
+
+Два независимых MCP-сервера:
+
+* `playwright` — `npx -y @playwright/mcp@latest`, работает на **chromium**;
+  браузер ставится один раз:
+
+  ```sh
+  npx -y playwright install chromium
+  ```
+
+  (установщик делает это сам, если `~/.cache/ms-playwright` пуст);
+
+* `chrome-devtools` — `npx -y chrome-devtools-mcp@latest`, работает на **системном
+  Chrome/Chromium**; путь к нему берётся из `CHROME_PATH`:
+
+  ```sh
+  CHROME_PATH=/usr/bin/google-chrome
+  ```
+
+  Если Chrome не установлен — установщик предупредит (и поставит руками,
+  без `sudo` в неинтерактивных шагах).
+
+---
+
+## Honcho — память агента
+
+Пер-проектная память: каждому проекту — отдельный workspace `project-<имя>`
+со своими сессиями. Активный проект определяется по рабочему каталогу (как у
+RAG — самый длинный префикс пути среди индексов, ближайший git-репозиторий
+или имя текущей папки).
+
+```sh
+make honcho           # развернуть (docker)
+curl http://127.0.0.1:8000/health
+```
+
+`honcho/setup-honcho.sh` клонирует официальный `plastic-labs/honcho` в `~/honcho`
+(один раз), копирует туда `.env` (его генерирует `configure.sh`) и
+`docker-compose.override.yml`, поднимает контейнеры и ждёт `:8000`.
+
+**LLM для памяти** (deriver / dialectic / summary / dream) — любой
+OpenAI-совместимый endpoint:
+
+```sh
+HONCHO_LLM_BASE_URL=https://api.minimax.io/v1
+HONCHO_LLM_MODEL=MiniMax-M3
+HONCHO_LLM_API_KEY=<ВАШ_КЛЮЧ>     # необязательно
+```
+
+Если `HONCHO_LLM_API_KEY` пуст, ключ берётся автоматически из базы opencode
+(`~/.local/share/opencode/opencode.db`, credential «MiniMax Token Plan») —
+скриптом `honcho/fetch-llm-key.sh`. Посмотреть ключ руками:
+
+```sh
+./honcho/fetch-llm-key.sh
+```
+
+**tiktoken-кэш.** При первом импорте `tiktoken` тянет BPE-файлы с
+`openaipublic.blob.core.windows.net`; в некоторых сетях этот домен режется
+прокси (TLS-хендшейк зависает без таймаута), и контейнер `honcho-api` не
+проходит старт — `/health` не отвечает, MCP honcho таймаутится. Поэтому
+`setup-honcho.sh` заранее готовит кэш (`honcho/fetch-tiktoken-cache.sh`):
+файлы берутся из репозитория или с HuggingFace, `cl100k_base` пересобирается из
+`tokenizer.json`, и всё сверяется по sha256 с официальными `expected_hash` из
+`tiktoken`.
+
+Пересобрать кэш вручную (если сеть чинили):
+
+```sh
+bash honcho/fetch-tiktoken-cache.sh ~/honcho/.tiktoken-cache
+docker compose -f ~/honcho/docker-compose.yml up -d
+```
+
+**Инструменты памяти** (регистрирует плагин `honcho-sync`):
+
+| Инструмент | Что делает |
 |---|---|
-| `rag` | поиск по коду **нескольких проектов** (лексика + BM25 + семантика bge-m3). Активный проект определяется по рабочей директории (`cwd` opencode) — где кодим, тот индекс и ищется. Инструменты: `rag_search`, `rag_where`, `rag_summary`, `rag_stats`, `rag_project` (активный + список), `kb_read`, `kb_add` |
-| `honcho` | пер-проектная память агента: свой workspace `project-<имя>` и сессии на каждый проект, авто-детект по сессии/`cwd`. Инструменты (от плагина `honcho-sync`): `honcho_sessions`, `honcho_memories`, `honcho_recall` (поиск по памяти), `honcho_save` |
-| `vision` | картинки: метаданные, OCR (offline), `describe_image` через любую OpenAI-совместимую vision-модель. Выключен, пока не задан `VISION_MODEL` |
-| `chrome-devtools` | браузерная автоматизация (находит Chrome по `CHROME_PATH` в `stack.config`) |
-| `playwright` | браузерная автоматизация |
+| `honcho_sessions` | сессии текущего проекта |
+| `honcho_memories` | сколько сообщений накоплено по каждой сессии |
+| `honcho_recall` | семантический поиск по памяти проекта |
+| `honcho_save` | сохранить факт/заметку в память проекта |
 
-### RAG-индексация (несколько проектов)
+Плагин `honcho-sync` ещё и **инжектит память в system prompt** новых сессий
+(блок `## Honcho Memory` — семантический поиск по всему workspace, query = первый
+user-запрос сессии) и пишет в память LLM-суммаризацию завершённых сессий
+(одно компактное сообщение `[Summary]`, без потока рассуждений).
 
-Каждый проект индексируется отдельно, в свой каталог (имя — как у папки
-проекта, или задаётся `--name`).
+Полезно знать: deriver обрабатывает диалог **батчами** — сообщения копятся до
+~512 токенов или 30 минут. Короткие диалоги висят в очереди — это нормально.
 
-**Глобальная команда `rag`** — зашёл в проект, вызвал из любого каталога:
+---
+
+## RAG: индекс и поиск по коду
+
+Поиск идёт по **нескольким проектам** сразу: лексика (BM25) + семантика
+(эмбеддинги). Активный проект определяется по рабочей директории opencode —
+где кодим, там и ищется.
 
 ```sh
 make install-bin         # один раз: симлинк ~/.local/bin/rag → bin/rag репо
@@ -199,130 +374,37 @@ rag kb add "факт о проекте"            # дописать в баз�
 rag index /path/to/other --name api    # или явный путь с алиасом
 ```
 
-`rag index` делает то же, что старый `rag-index.sh` (скрипт в корне репо):
-`build-index.mjs` + `embed.mjs` + список.
+По умолчанию индекс ищется по текущему каталогу; `--project <имя>` (или
+`RAG_PROJECT=<имя>`) переключает проект вручную.
 
-Что происходит внутри:
-
-1. `build-index.mjs` — обходит исходники (исключая `node_modules`, `dist`,
-   `.git`, бинари), нарезает файлы на чанки (~150 строк с перекрытием),
-   кладёт чанки + токены для BM25 + `project.path` (абсолютный путь к
-   исходников) в sqlite `rag/projects/<имя>/index.db`;
-2. `embed.mjs` — считает эмбеддинги bge-m3 (:8095) и заливает их в **Qdrant**
-   (:6333, коллекция `rag_<имя>`), пропуская уже залитые;
-3. готово — opencode, запущенный в этом каталоге, сам найдёт проект по
-   `project.path` (совпадение рабочей директории), ничего подключать не надо.
-
-То же самое вручную, по шагам:
+По шагам (то же самое делает `rag index`):
 
 ```sh
-make infra                     # embed :8095 + qdrant :6333 (модель не нужна)
-# 1) построить индекс проекта (чанки + лексика → sqlite):
+make infra                                  # embed :8095 + qdrant :6333
 node mcp/build-index.mjs --project /path/to/project      # имя = имя папки
 node mcp/build-index.mjs --project /path/to/api --name api
 node mcp/build-index.mjs --list                          # что уже проиндексировано
-# 2) залить ВЕКТОРА в Qdrant (bge-m3 :8095): все проекты без эмбеддингов
-node mcp/embed.mjs
+node mcp/embed.mjs                                       # залить вектора во все проекты
 node mcp/embed.mjs --project api                         # или только один
 node mcp/embed.mjs --project api --reset                 # пересоздать коллекцию
 ```
 
-Хранение разделено: **sqlite** (`rag/projects/<имя>/index.db`) — чанки,
-токены для BM25, `PROJECT_KNOWLEDGE.md`, `project.path`; **Qdrant** (:6333,
-коллекция `rag_<имя>`, dim 1024, cosine) — эмбеддинги чанков. Без Qdrant
-поиск остаётся лексическим (BM25), семантика добавляется автоматически.
+Хранение разделено: **sqlite** (`rag/projects/<имя>/index.db`) — чанки, токены
+для BM25, `PROJECT_KNOWLEDGE.md`, `project.path`; **Qdrant** (`:6333`, коллекция
+`rag_<имя>`, cosine, размерность = выбранная модель) — эмбеддинги чанков. Без
+Qdrant поиск остаётся лексическим (BM25), семантика добавляется автоматически.
 
-**Как выбирается проект**: MCP-сервер `rag` (и команда `rag`) смотрят на
-рабочий каталог — берётся индекс проекта с самым длинным префиксом пути
-(глубина вложенности не важна). Так что в разных проектах один и тот же
-opencode ищет по своему индексу. Переключение вручную — параметр `project`
-любого инструмента (см. `rag_project`), `--project` у `rag search`, или
-`RAG_PROJECT=<имя>`.
+Плагин `rag-sync` автоматически подмешивает релевантные чанки в контекст
+(блок `## RAG Context`) при первом сообщении сессии и переиндексирует проект
+по окончании сессии.
 
-**Автоматизация через плагин rag-sync**:
-- Плагин автоматически ищет релевантные чанки в контекст при первом сообщении сессии и автоматически
-  переиндексирует проект по окончании сессии.
-- Инструменты теперь доступны через плагин (автопоиск + инструменты + авто-переиндексация).
-- MCP-сервер `rag` теперь отключён.
+---
 
-## Honcho (пер-проектная память агента)
+## Скиллы и плагины
 
-Память изолирована **по проектам**: каждому проекту — отдельный workspace
-`project-<имя>` со своими сессиями. Активный проект определяется так же, как
-у RAG — по рабочей директории (проект = самый длинный префикс пути среди
-RAG-индексов, либо ближайший git-репозиторий, либо имя текущей папки).
+### Скиллы
 
-```sh
-make up              # поднимет и honcho (в составе make up) — или отдельно:
-make honcho          # ./honcho/setup-honcho.sh: clone plastic-labs/honcho + docker compose up
-curl http://127.0.0.1:8000/health   # проверка
-```
-
-Характеристики поведения (проверено на локальной Gemma):
-
-- Работа deriver (вывод памяти из сообщений) — **батчами**: диалог обрабатывается,
-  когда накопленные сообщения ≥512 токенов ИЛИ прошло 30 минут (`REPRESENTATION_BATCH_*`
-  в `~/honcho/.env`). Короткие диалоги висят в очереди до 30 мин — это норма.
-- Выводимая память пишется на английском (дефолтные промпты honcho англоязычные).
-- `.env` генерирует `configure.sh`; `VECTOR_STORE_TYPE=pgvector` — значение обязано
-  совпадать с кодом honcho (не `postgres`).
-
-Инструменты (регистрирует плагин `honcho-sync`, MCP-сервер honcho отключён):
-
-- `honcho_sessions` — сессии текущего проекта;
-- `honcho_save` — сохранить факт/заметку в память проекта;
-- `honcho_recall` — семантический поиск по памяти проекта («что мы решали
-  по поводу биллинга?»);
-- `honcho_memories` — сколько сообщений накоплено по каждой сессии.
-
-Плагин сам пишет в память LLM-суммаризации завершённых сессий (той же
-моделью, что в сессии; fallback MiniMax-M3 из конфига opencode) и инжектит
-релевантную память (`## Honcho Memory`) в system prompt через семантический
-поиск по workspace. Следующая сессия агента в том же каталоге подхватит эту
-память автоматически.
-
-LLM для honcho (deriver/dialectic/summary/dream) задаётся в `stack.config`:
-`HONCHO_LLM_BASE_URL` / `HONCHO_LLM_MODEL` — укажи явно адрес любой
-OpenAI-совместимой модели (honcho живёт в docker, поэтому для локальной —
-`host.docker.internal:1234`, а не `127.0.0.1`). Эмбеддинги — собственный
-контейнер honcho (`:8100`, paraphrase-multilingual-MiniLM-L12-v2).
-
-## Модели
-
-| Роль | Модель | Файл | URL (HuggingFace) |
-|---|---|---|---|
-| Основная LLM (опционально, `make model-gemma`) | Gemma 4 12B it (256K) | `gemma-4-12b-it-Q4_K_M.gguf` (6.7 GB) | `unsloth/gemma-4-12b-it-GGUF` |
-| Эмбеддинги (всегда, для RAG) | bge-m3 | `bge-m3-q8_0.gguf` (606 MB) | `vonjack/bge-m3-gguf` |
-
-Любые другие модели (кодер, вижн, инструменты) — удалённые провайдеры,
-добавляются нативно в opencode (`/providers`, `auth login`, `provider add`);
-в `stack.config` для MCP остаются `VISION_*` и `HONCHO_LLM_*`.
-
-## Каталог репозитория
-
-```
-setup.sh                 установщик (CUDA, llama.cpp, модели, Qdrant, honcho)
-configure.sh             генератор конфигов из stack.config (merge, только MCP + провайдер local)
-rag-index.sh             индексация проекта + заливка векторов в Qdrant (как `rag index`)
-bin/rag                  глобальная команда `rag` (make install-bin): index/search/where/stats/list/kb
-start.sh                 стек-менеджер (all/infra/embed/main/qdrant/stop/health)
-Makefile                 обёртки над setup/configure/start; install-bin — глобальный `rag`
-stack.config.example     настройки MCP-стеков (vision, honcho, chrome)
-agents/                  кастомные агенты (implementer, reviewer)
-skills/                  скиллы агентам: auto-tz (ТЗ→оркестрация), subagent-orchestrator, browser-automation
-plugins/                 honcho-sync.ts — память в honcho: LLM-суммаризации сессий,
-                         семантическая инъекция памяти, инструменты honcho_recall/save
-mcp/                     MCP-серверы: rag-server (поиск), honcho-server (память, отключён —
-                         инструменты даёт плагин),
-                         vision-server; rag-lib.mjs (ядро поиска) + rag-cli.mjs (CLI),
-                         build-index.mjs/embed.mjs (индексация)
-honcho/                  развёртывание локальной памяти (docker)
-qdrant/config.yaml       конфиг Qdrant (:6333, dim 1024)
-```
-
-## Скиллы (агентные навыки)
-
-В `skills/` лежат три скилла для opencode (кладутся в `~/.config/opencode/skills/`):
+В `skills/` лежат три скилла для opencode:
 
 | Скилл | Зачем |
 |---|---|
@@ -330,26 +412,172 @@ qdrant/config.yaml       конфиг Qdrant (:6333, dim 1024)
 | `subagent-orchestrator` | адаптивный пайплайн explore/plan/implement/QA; когда и сколько sub-agent'ов |
 | `browser-automation` | авто-проверка UI через chrome-devtools / playwright MCP |
 
-Установка (симлинки, не копии — правки в репо сразу видны агенту):
+Ставятся **симлинками** в `~/.config/opencode/skills` (правки в репо сразу видны
+агенту):
 
 ```sh
 make install-skills
 ```
 
+### Плагины
+
+Плагины opencode живут в `~/.config/opencode/plugins/` и **копируются**
+(`configure.sh`):
+
+| Плагин | Что делает |
+|---|---|
+| `honcho-sync.ts` | память проекта в Honcho: LLM-суммаризация сессий, семантическая инъекция `## Honcho Memory`, инструменты `honcho_*` |
+| `rag-sync.ts` | автопоиск по индексу + авто-переиндексация, инструменты `rag_*` |
+| `stats-common.mjs` | общие счётчики для плагинов |
+| `plugins-status/` | TUI-панель со статусом плагинов (`/plugins`) — каталог, ставится в `~/.config/opencode/plugins/` вручную (автоматически не копируется) |
+
+После обновления плагина перезапусти opencode, чтобы он загрузился.
+
+---
+
+## Команды `make`
+
+| Цель | Что делает |
+|---|---|
+| `make setup [EMBED_MODEL=...] [WITH_HONCHO=1]` | полная установка (llama.cpp, embed-модель, Qdrant, npm, playwright, honcho, конфиги) |
+| `make models` | только скачать embed-модель |
+| `make config` | перегенерировать `opencode.json` + `honcho/.env` из `stack.config` |
+| `make set-vision VISION_MODEL=... VISION_BASE_URL=... VISION_API_KEY=...` | включить vision-MCP |
+| `make install-bin` | симлинк `~/.local/bin/rag` → `bin/rag` |
+| `make install-skills` | симлинки скиллов в `~/.config/opencode/skills` |
+| `make up` | поднять всё установленное: конфиги + embed + qdrant + honcho |
+| `make infra` | только embed `:8095` + qdrant `:6333` |
+| `make stop` | остановить локальный стек |
+| `make down` | остановить стек и honcho (volumes сохраняются) |
+| `make health` | статус сервисов (`:8095`, `:6333`, `:8000`) |
+| `make honcho` | развернуть/обновить Honcho |
+| `make clean` | удалить собранное и скачанное (модели и данные остаются) |
+| `make help` | список целей |
+
+Эквивалент вручную: `./setup.sh`, `./configure.sh`, `./start.sh all|infra|embed|qdrant|config|stop|health`,
+`./honcho/setup-honcho.sh`.
+
+Флаги `setup.sh` (все опциональны, скрипт идемпотентен):
+`--embed-model <имя модели>`, `--honcho 0|1`, `--config-only`, `--only-links`,
+`--skip-llamacpp`, `--skip-models`, `--skip-qdrant`, `--skip-honcho`,
+`--skip-npm`, `--skip-playwright`, `--skip-config`, `--force-llamacpp`.
+
+---
+
+## Каталог репозитория
+
+```
+setup.sh                 установщик (llama.cpp, embed-модель, Qdrant, npm, playwright, honcho, конфиги)
+configure.sh             генератор конфигов из stack.config (opencode.json + honcho/.env + плагины)
+start.sh                 стек-менеджер (embed :8095, qdrant :6333, stop, health)
+Makefile                 обёртки над setup/configure/start (setup, models, up, down, health, help)
+stack.config.example     шаблон настроек MCP-стеков — копируется в stack.config
+stack.config             локальные настройки с ключами (в .gitignore, в git не попадает)
+bin/rag                  глобальная команда `rag` (make install-bin → ~/.local/bin/rag)
+rag-index.sh             индексация проекта + вектора в Qdrant (то же, что `rag index`)
+mcp/                     MCP-серверы и ядро RAG:
+                           rag-server.mjs, honcho-server.mjs, vision-server.mjs,
+                           rag-lib.mjs (ядро поиска), rag-cli.mjs (CLI),
+                           build-index.mjs + embed.mjs (индексация), package.json
+plugins/                 honcho-sync.ts (память в honcho), rag-sync.ts (автопоиск +
+                           авто-переиндексация), stats-common.mjs, plugins-status/ (TUI)
+skills/                  скиллы агентам: auto-tz, subagent-orchestrator, browser-automation
+agents/                  кастомные агенты (implementer.md, reviewer.md)
+honcho/                  развёртывание памяти (docker): setup-honcho.sh,
+                         fetch-tiktoken-cache.sh, fetch-llm-key.sh, .env.template,
+                         docker-compose.override.yml, .tiktoken-cache/
+qdrant/                  конфиг Qdrant (:6333) — бинарь и storage не в git
+models/                  embed-модели (gguf) — не в git
+llama.cpp-bin/           готовый llama.cpp (llama-server) — не в git
+rag/                     индексы проектов (sqlite) и логи — не в git
+```
+
+---
+
+## Troubleshooting
+
+**Embed не поднялся (`:8095` не отвечает).**
+
+```sh
+ls -l llama.cpp-bin/*/llama-server      # бинарь на месте?
+ls -l models/*.gguf                     # модель скачалась?
+tail -50 rag/embed-server.log            # лог
+```
+
+Нет бинаря — переустановить: `make setup`. Нет модели — скачать:
+`make models`. Модель и бинарь подбираются по `stack.config`
+(`EMBED_FILE`, `EMBED_POOLING`).
+
+**Qdrant не отвечает (`:6333`).**
+
+```sh
+tail -50 qdrant/qdrant.log
+ls -l qdrant/qdrant                    # бинарь скачан?
+```
+
+**Honcho `unhealthy` / `/health` не отвечает.** Почти всегда — tiktoken: сеть
+режет `openaipublic.blob.core.windows.net`, контейнер `api` висит на импорте.
+
+```sh
+docker compose -f ~/honcho/docker-compose.yml logs api | tail -50
+bash honcho/fetch-tiktoken-cache.sh ~/honcho/.tiktoken-cache   # sha256 должен совпасть
+docker compose -f ~/honcho/docker-compose.yml up -d
+```
+
+Также проверь ключ LLM памяти: `HONCHO_LLM_API_KEY` в `stack.config` или
+`./honcho/fetch-llm-key.sh`.
+
+**Vision: `Cannot find package 'sharp'` (или `tesseract.js`).**
+
+```sh
+cd mcp && npm ci          # зависимости MCP-серверов
+```
+
+После установки пакетов перезапусти opencode.
+
+**MCP-серверы не видны в opencode.**
+
+```sh
+opencode mcp list         # список и статус
+cat ~/.config/opencode/opencode.json
+```
+
+* нет файла → `make config` (или `./configure.sh`);
+* сервер есть, но `disabled` → поправь вручную или перегенерируй конфиг;
+* `vision` отсутствует — так и задумано, пока не задан `VISION_MODEL`;
+* `chrome-devtools`/`playwright` падают — нужен интернет (npx тянет пакеты)
+  и установленный браузер (`npx -y playwright install chromium`).
+
+**Порт занят.**
+
+```sh
+ss -ltnp | grep -E '8095|6333|8000'
+make stop                 # остановить локальный стек
+```
+
+**После переустановки ОС всё заново — чек-лист:**
+
+1. `git clone https://github.com/la-la-land/opencode-env.git && cd opencode-env`
+2. `cp stack.config.example stack.config` → вписать `VISION_API_KEY` (+ `HONCHO_LLM_API_KEY`, если нужен)
+3. `make setup EMBED_MODEL=minilm WITH_HONCHO=1`
+4. `make up`
+5. `opencode` → `/models` выбрать модель, `opencode mcp list` проверить MCP
+6. проиндексировать проекты: `cd ~/myproject && rag index`
+
+---
+
 ## FAQ
 
-- **Нет GPU?** `make setup` — только инфраструктура; любую модель выбираешь в
-  opencode `/models` (удалённые провайдеры — нативно). Эмбеддинги/RAG работают на CPU.
-- **Локальная Gemma?** `make model-gemma` — установка + авто-регистрация провайдера
-  `local` с моделью `local/gemma` («Local Gemma 4 12B it»); после этого выбор в `/models`.
-- **Хочу другую локальную модель?** Положи GGUF в `models/`, замени
-  `LOCAL_LLM_MODEL`/`--alias` в `stack.config` и `start.sh` — модель останется `local/gemma`.
-- **Vision?** `make set-vision MODEL=... BASE=... KEY=...` — vision-mcp
-  подключится; `describe_image` работает через любую OpenAI-совместимую
-  мультимодалку.
+- **Нет GPU?** Всё равно работает: эмбеддинги и RAG считаются на CPU, модель
+  для агента — удалённая (`/models`).
+- **Модель для агента?** Любая из `/models`; суб-агенты наследуют модель
+  сессии — отдельная модель агенту не нужна.
+- **Своя локальная LLM?** Стек её не держит. Модель добавляется как обычный
+  OpenAI-совместимый провайдер в opencode (`/providers`, `auth login`,
+  `provider add`).
 - **Несколько проектов?** Индексируй каждый: `rag index /path --name alias`.
-  Сервер сам выберет нужный индекс по рабочей директории (`rag list` покажет активный).
-- **Модель суб-агента?** Суб-агенты всегда наследуют модель текущей сессии —
-  достаточно `rag`-команд и `/models`; отдельная модель агенту не нужна.
+  Активный проект выбирается по рабочему каталогу, `rag list` покажет текущий.
+- **Память переехала на другую машину?** Volume honcho живёт в docker — перенеси
+  его (`docker volume`) или разверни заново.
 
 Лицензия: MIT.

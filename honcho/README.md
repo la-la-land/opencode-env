@@ -1,17 +1,20 @@
 # honcho — локальная память агента (Honcho v3)
 
-Разворачивает Honcho в Docker **полностью локально** (без mcp.honcho.dev и API-ключей):
-API + deriver + redis + pgvector + embedder. Все LLM-вызовы honcho
-(deriver, dialectic, summary, dream) идут на **локальную Gemma 4 12B** (:1234).
+Разворачивает Honcho в Docker (без mcp.honcho.dev): API + deriver + redis +
+pgvector + embedder. Все LLM-вызовы honcho (deriver, dialectic, summary, dream)
+идут на **удалённый OpenAI-совместимый endpoint** (по умолчанию MiniMax).
 
 ## Быстрый старт
 
 ```sh
-# 1) сначала подними стек с моделью:  ../start.sh main   (или make start в корне)
+# 1) сначала подними стек с моделью:  ../start.sh infra   (или make infra в корне)
 # 2) разверни honcho:
 ./setup-honcho.sh
 # 3) проверь:  curl http://127.0.0.1:8000/health
 ```
+
+> Локальной LLM в проекте нет — llama.cpp работает только как embed-сервер
+> (:8095). Модель для агента выбирается в opencode (/models).
 
 ## Что делает setup-honcho.sh
 
@@ -25,14 +28,15 @@ API + deriver + redis + pgvector + embedder. Все LLM-вызовы honcho
 Адреса моделей honcho задаются в `../stack.config`:
 
 ```sh
-HONCHO_LLM_BASE_URL=http://host.docker.internal:1234/v1   # локальная Gemma
-HONCHO_LLM_MODEL=local-coder
+HONCHO_LLM_BASE_URL=https://api.minimax.io/v1   # удалённый OpenAI-совместимый endpoint
+HONCHO_LLM_MODEL=MiniMax-M3
+HONCHO_LLM_API_KEY=<ваш ключ>                   # необязательно: возьмётся из opencode.db
 ```
 
 После правки: `./configure.sh` (корень репо) перегенерирует `honcho/.env`.
-Нет локальной модели (ноутбук)? Подставь любую OpenAI-совместимую endpoint.
-Эмбеддинги honcho использует собственный контейнер (`embedding:8100`,
-paraphrase-multilingual-MiniLM-L12-v2) — ему внешняя модель не нужна.
+Эмбеддинги honcho берутся с локального llama.cpp на хосте
+(`host.docker.internal:8095`) — модель и размерность из `EMBED_MODEL`/
+`EMBED_DIM` в `stack.config` (MiniLM 384-dim или bge-m3 1024-dim).
 
 ## Связь с opencode
 

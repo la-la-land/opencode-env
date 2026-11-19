@@ -1,30 +1,59 @@
 # ============================================================
-# opencode-env / stack.config — настройки MCP-стеков.
-# Меняй значения и запусти: ./configure.sh (или make config).
-# Всё остальное (opencode.json, honcho/.env) перегенерируется автоматически.
+# opencode-env / stack.config — настройки стека.
+#
+#   cp stack.config.example stack.config   # и заполни ключи
+#   ./configure.sh                          # перегенерировать конфиги
+#
+# Файл читают: start.sh (модель эмбеддингов), configure.sh (MCP + honcho/.env),
+# mcp/embed.mjs (размерность вектора). Локальный stack.config в .gitignore —
+# реальные ключи НЕ коммить.
 #
 # Чего здесь НЕТ (и не будет):
-#   - модели по умолчанию — opencode сам даёт список моделей в /models,
-#     выбираешь прямо в сессии, суб-агенты наследуют её;
-#   - удалённые провайдеры — добавляются нативно: opencode /providers,
+#   - модели по умолчанию для opencode — opencode сам даёт список моделей в
+#     /models, выбираешь прямо в сессии, суб-агенты наследуют её;
+#   - удалённых провайдеров — добавляются нативно: opencode /providers,
 #     auth login, provider add;
-#   - модели суб-агентов — наследуют модель сессии.
+#   - моделей суб-агентов — наследуют модель сессии;
+#   - локальной LLM (llama.cpp) — её больше нет, llama.cpp только эмбеддинги.
 # ============================================================
 
-# --- локальная LLM (llama.cpp :1234) — только если поставил: make model-gemma ---
-LOCAL_LLM_BASE_URL=http://127.0.0.1:1234/v1
-LOCAL_LLM_MODEL=local-coder
+# --- модель эмбеддингов (llama.cpp :8095) ---
+# bge-m3 — качественнее (590 МБ, 1024-dim, pooling cls): основной вариант.
+# minilm — для маломощных ПК (126 МБ, 384-dim, pooling mean): лёгкий вариант.
+# Файл качается setup.sh (make models), в models/ кладётся как EMBED_FILE.
+EMBED_MODEL=bge-m3
+EMBED_FILE=models/bge-m3-q8_0.gguf
+EMBED_DIM=1024
+EMBED_POOLING=cls
+EMBED_URL=https://huggingface.co/vonjack/bge-m3-gguf/resolve/main/bge-m3-q8_0.gguf
+
+# ...или лёгкий вариант (раскомментируй и закомментируй bge-m3 выше):
+# EMBED_MODEL=minilm
+# EMBED_FILE=models/paraphrase-multilingual-MiniLM-L12-v2-Q8_0.gguf
+# EMBED_DIM=384
+# EMBED_POOLING=mean
+# EMBED_URL=https://huggingface.co/mykor/paraphrase-multilingual-MiniLM-L12-v2.gguf/resolve/main/paraphrase-multilingual-MiniLM-L12-118M-v2-Q8_0.gguf
 
 # --- vision-MCP (скриншоты, описание картинок) ---
 # Пусто = vision выключен. Включить: ./configure.sh set-vision <model> <base_url> [api_key]
-VISION_MODEL=
-VISION_BASE_URL=
+# Ключ можно не хранить здесь: экспортируй VISION_API_KEY=... в окружении.
+VISION_MODEL=MiniMax-M3
+VISION_BASE_URL=https://api.minimax.io/v1
 VISION_API_KEY=
 
 # --- honcho (память агента): LLM для deriver/dialectic/summary ---
-# Пусто = берётся из LOCAL_LLM_* (адрес внутри docker-контейнеров: host.docker.internal).
-HONCHO_LLM_BASE_URL=http://host.docker.internal:1234/v1
-HONCHO_LLM_MODEL=local-coder
+# Пусто = ключ берётся из базы opencode (cred "MiniMax Token Plan"),
+# см. honcho/fetch-llm-key.sh.
+HONCHO_LLM_BASE_URL=https://api.minimax.io/v1
+HONCHO_LLM_MODEL=MiniMax-M3
+HONCHO_LLM_API_KEY=
 
 # --- браузер (chrome-devtools MCP) ---
 CHROME_PATH=/usr/bin/google-chrome
+
+# --- необязательные переопределения (обычно не нужны) ---
+# RAG_EMBED_DIM=384        # размерность вектора для mcp/embed.mjs (по умолчанию = EMBED_DIM)
+# RAG_EMBED_MODEL=minilm   # модель эмбеддингов для mcp/embed.mjs (по умолчанию = EMBED_MODEL)
+# RAG_EMBED_URL=http://127.0.0.1:8095/v1/embeddings
+# QDRANT_URL=http://127.0.0.1:6333
+# HONCHO_BASE_URL=http://127.0.0.1:8000

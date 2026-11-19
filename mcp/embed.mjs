@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 /**
- * embed.mjs — эмбеддинги bge-m3 для RAG, хранение ВЕКТОРОВ В Qdrant.
+ * embed.mjs — эмбеддинги для RAG, хранение ВЕКТОРОВ В Qdrant.
  *
  * Для каждого проекта в rag/projects/<name>/index.db (sqlite) лежат чанки
  * и лексика (BM25). Вектора уходят в Qdrant :6333 — коллекция rag_<name>
- * (dim 384 — MiniLM, distance Cosine), payload: path/start_line/end_line/lang.
+ * (dim = размерность эмбеддинга, distance Cosine), payload: path/start_line/end_line/lang.
  * Уже залитые проекты (points_count == chunks) пропускаются.
  *
- * Требует запущенные bge-m3 (:8095) и Qdrant (:6333):
+ * Размерность вектора (единый контракт):
+ *   RAG_EMBED_DIM  →  EMBED_DIM из stack.config  →  384 (MiniLM по умолчанию)
+ *   bge-m3 = 1024 (pooling cls), MiniLM = 384 (pooling mean)
+ *
+ * Требует запущенные embed-сервер (:8095) и Qdrant (:6333):
  *   make infra   (./start.sh infra — embed + qdrant)
  *
  * Запуск:
@@ -25,12 +29,51 @@ const ROOT = path.resolve(__dirname, "..");
 const PROJECTS_DIR = process.env.RAG_PROJECTS_DIR ?? path.join(ROOT, "rag", "projects");
 const EMBED_URL = process.env.RAG_EMBED_URL ?? "http://127.0.0.1:8095/v1/embeddings";
 const QDRANT_URL = (process.env.QDRANT_URL ?? "http://127.0.0.1:6333").replace(/\/+$/, "");
-const DEFAULT_DIM = parseInt(process.env.RAG_EMBED_DIM || "384", 10);
 const BATCH = 64;
-// MiniLM-L12-v2 (384-dim, soft-limit ~512 токенов на вход): слишком длинный
-// единичный вход валит весь запрос (embed HTTP 500). Режем символы, чтобы
-// вход гарантированно влезал в лимит токенов модели.
-const MAX_CHARS = parseInt(process.env.RAG_EMBED_MAX_CHARS || "600", 10);
+
+// ---------- stack.config (EMBED_DIM / EMBED_MODEL) ----------
+function readStackConfig(file) {
+  const out = {};
+  let text;
+  try {
+    if (!file || !fs.existsSync(file)) return out;
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return out;
+  }
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if (!/^["']/.test(val)) val = val.replace(/\s+#.*$/, "").trim();
+    if (val.length >= 2 && /^["'].*["']$/.test(val)) val = val.slice(1, -1);
+    if (key) out[key] = val;
+  }
+  return out;
+}
+
+const STACK = readStackConfig(process.env.STACK_CONFIG || path.join(ROOT, "stack.config"));
+
+// Размерность: RAG_EMBED_DIM → EMBED_DIM (stack.config) → 384 (MiniLM)
+const DECLARED_DIM = (() => {
+  const raw = process.env.RAG_EMBED_DIM || STACK.EMBED_DIM || "384";
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 384;
+})();
+// Модель эмбеддингов: bge-m3 (1024, pooling cls) или minilm (384, pooling mean)
+const EMBED_MODEL = (process.env.RAG_EMBED_MODEL || STACK.EMBED_MODEL || "").toLowerCase();
+const IS_BGE = EMBED_MODEL.includes("bge");
+
+// Длина текста на чанк: MiniLM-L12-v2 (384-dim, soft-limit ~512 токенов на вход) —
+// слишком длинный единичный вход валит весь запрос (embed HTTP 500), поэтому режем символы.
+// У bge-m3 (1024) лимит контекста большой (~8k токенов) — режем мягче.
+const MAX_CHARS = parseInt(
+  process.env.RAG_EMBED_MAX_CHARS || (IS_BGE ? "4000" : "600"),
+  10,
+);
 
 const args = process.argv.slice(2);
 let only = null, reset = false;
@@ -68,6 +111,14 @@ async function collectionInfo(name) {
   return j?.result ?? null;
 }
 
+// Размерность уже существующей коллекции (для контроля совпадения с embed-сервером)
+function collectionDim(info) {
+  const v = info?.config?.params?.vectors;
+  if (typeof v?.size === "number") return v.size;
+  if (typeof v?.size === "object" && typeof v.size.size === "number") return v.size.size;
+  return null;
+}
+
 async function upsertPoints(name, points) {
   await qdrant("PUT", `/collections/${collectionName(name)}/points`, {
     points: points.map((p) => ({
@@ -95,14 +146,25 @@ async function embedBatch(inputs) {
   return j.data.map((d) => Float32Array.from(d.embedding));
 }
 
-async function embedProject(name) {
+// Проба embed-сервера: узнаём фактическую размерность вектора.
+// Если она отличается от объявленной (RAG_EMBED_DIM / EMBED_DIM) — коллекция должна
+// быть создана с ФАКТИЧЕСКОЙ размерностью, иначе Qdrant отвергнет векторы.
+async function probeDim() {
+  try {
+    const v = await embedBatch(["dim probe"]);
+    return v[0]?.length ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function embedProject(name, dim) {
   const dbPath = path.join(PROJECTS_DIR, name, "index.db");
   const db = new DatabaseSync(dbPath);
   const rows = db.prepare("SELECT id,path,start_line,end_line,lang,text FROM chunks").all();
   db.close();
   if (!rows.length) { console.log(`  ${name}: пустой индекс — пропуск`); return; }
 
-  const dim = DEFAULT_DIM;
   if (reset) {
     const removed = await deleteCollection(name);
     console.log(`  ${name}: коллекция удалена (reset)${removed ? "" : " — её не было"}`);
@@ -137,9 +199,28 @@ async function main() {
   }
   if (!names.length) { console.error("Индексов нет — сначала: node mcp/build-index.mjs --project /path/to/project"); process.exit(1); }
 
-  console.log(`Qdrant: ${QDRANT_URL}  |  embed: ${EMBED_URL}`);
+  // Фактическая размерность важнее объявленной: Qdrant отвергает векторы другой длины.
+  const probed = await probeDim();
+  let dim = DECLARED_DIM;
+  if (probed && probed !== DECLARED_DIM) {
+    console.warn(
+      `⚠ embed-сервер отдаёт ${probed}-мерные векторы, а объявлено ${DECLARED_DIM} ` +
+      `(RAG_EMBED_DIM / EMBED_DIM). Использую фактические ${probed} — поправь EMBED_DIM в stack.config.`,
+    );
+    dim = probed;
+  }
+
+  console.log(`Qdrant: ${QDRANT_URL}  |  embed: ${EMBED_URL}  |  dim: ${dim}${probed ? "" : " (не проверена)"}`);
   for (const name of names) {
     const info = await collectionInfo(name);
+    const existingDim = collectionDim(info);
+    if (existingDim && existingDim !== dim) {
+      console.error(
+        `  ${name}: коллекция rag_${name} имеет dim ${existingDim}, а embed-сервер даёт ${dim}. ` +
+        `Пересоздайте коллекцию: node mcp/embed.mjs --project ${name} --reset`,
+      );
+      continue;
+    }
     const total = (() => {
       const db = new DatabaseSync(path.join(PROJECTS_DIR, name, "index.db"));
       const n = db.prepare("SELECT COUNT(*) c FROM chunks").get().c;
@@ -150,9 +231,9 @@ async function main() {
       console.log(`  ${name}: уже в Qdrant (${info.points_count}/${total}) — пропуск`);
       continue;
     }
-    if (!info) console.log(`  ${name}: коллекции нет — создаю и заливаю (${total} чанков)`);
+    if (!info) console.log(`  ${name}: коллекции нет — создаю (dim ${dim}) и заливаю (${total} чанков)`);
     else if (info.points_count < total) console.log(`  ${name}: в Qdrant только ${info.points_count}/${total} — перезаливаю`);
-    await embedProject(name);
+    await embedProject(name, dim);
   }
   console.log("Готово.");
 }

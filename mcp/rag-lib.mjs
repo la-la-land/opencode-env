@@ -2,7 +2,8 @@
 /**
  * rag-lib.mjs — общее ядро RAG (используют rag-server.mjs и rag-cli.mjs).
  * Чанки и лексика (BM25) — sqlite rag/projects/<name>/index.db;
- * вектора — Qdrant :6333 (коллекция rag_<name>, dim 384 (MiniLM), cosine).
+ * вектора — Qdrant :6333 (коллекция rag_<name>, dim = размерность эмбеддинга:
+ * MiniLM 384 или bge-m3 1024, cosine).
  */
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
@@ -283,7 +284,7 @@ export async function stats(idx) {
   const info = await qdrantGet(collectionName(idx.name));
   const vecs = info?.points_count ?? info?.vectors_count ?? null;
   const vecLine = vecs === null
-    ? "Эмбеддинги: 0 (коллекция не создана — запусти rag index; нужны bge-m3 :8095 и Qdrant :6333)"
+    ? "Эмбеддинги: 0 (коллекция не создана — запусти rag index; нужны embed-сервер :8095 и Qdrant :6333)"
     : `Эмбеддинги: ${vecs}/${idx.N} чанков (Qdrant: rag_${idx.name})`;
   return `Проект: ${idx.name} (${idx.src})\nИндекс: ${idx.N} чанков (${Object.keys(langs).length} языков)\nЯзыки: ${Object.entries(langs).map(([k, v]) => `${k}=${v}`).join(", ")}\n${vecLine}\nБаза знаний: ${fs.existsSync(idx.kbPath) ? idx.kbPath : "нет"}`;
 }

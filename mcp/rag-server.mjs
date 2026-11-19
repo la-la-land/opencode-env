@@ -4,7 +4,8 @@
  *
  * Индексы хранятся по проектам: rag/projects/<name>/ (см. build-index.mjs).
  * Чанки и лексика (BM25) — в sqlite index.db; ВЕКТОРА — в Qdrant :6333,
- * коллекция rag_<name> (dim 384 (MiniLM), cosine), заливаются mcp/embed.mjs.
+ * коллекция rag_<name> (dim = размерность эмбеддинга: MiniLM 384 или bge-m3 1024, cosine),
+ * заливаются mcp/embed.mjs.
  * Активный проект определяется по рабочей директории (cwd) процесса opencode:
  * выбирается проект, чей путь — самый длинный префикс текущего каталога.
  * Можно явно указать проект в любом инструменте (параметр project).
@@ -13,7 +14,7 @@
  *
  * Инструменты:
  *   rag_project()          — активный проект + список всех
- *   rag_search(query,n,semantic,project?)   — гибридный поиск (лексика + BM25 + семантика bge-m3)
+ *   rag_search(query,n,semantic,project?)   — гибридный поиск (лексика + BM25 + семантика эмбеддингов)
  *   rag_where(symbol,n,project?)            — где определён класс/функция/символ
  *   rag_summary(path,project?)              — сводка по файлу/модулю
  *   rag_stats(project?)                     — статистика индекса
@@ -40,7 +41,7 @@ const tools = [
       properties: {
         query: { type: "string", description: "Что ищем (рус/англ/идентификаторы)" },
         n: { type: "integer", description: "Сколько результатов, default 5" },
-        semantic: { type: "boolean", description: "Включать семантический слой (нужен bge-m3 на :8095), default true" },
+        semantic: { type: "boolean", description: "Включать семантический слой (нужен embed-сервер на :8095), default true" },
         project: { type: "string", description: "Имя проекта (см. rag_project). По умолчанию — активный по cwd" },
       },
       required: ["query"],
